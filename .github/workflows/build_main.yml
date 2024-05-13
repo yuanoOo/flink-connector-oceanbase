@@ -1,9 +1,9 @@
-name: Build Main
+name: Build All Branch
 
 on:
   push:
     branches:
-      - main
+      - *
 
 jobs:
   build:
