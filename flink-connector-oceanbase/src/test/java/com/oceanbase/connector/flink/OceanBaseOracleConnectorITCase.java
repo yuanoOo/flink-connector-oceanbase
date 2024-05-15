@@ -18,7 +18,7 @@ package com.oceanbase.connector.flink;
 
 import com.oceanbase.connector.flink.connection.OceanBaseConnectionProvider;
 import com.oceanbase.connector.flink.dialect.OceanBaseDialect;
-import com.oceanbase.connector.flink.dialect.OceanBaseMySQLDialect;
+import com.oceanbase.connector.flink.dialect.OceanBaseOracleDialect;
 import com.oceanbase.connector.flink.sink.OceanBaseRecordFlusher;
 import com.oceanbase.connector.flink.sink.OceanBaseSink;
 import com.oceanbase.connector.flink.table.DataChangeRecord;
@@ -45,6 +45,8 @@ import org.apache.flink.types.RowKind;
 
 import org.apache.commons.collections.CollectionUtils;
 import org.junit.After;
+import org.junit.Before;
+import org.junit.Ignore;
 import org.junit.Test;
 
 import java.math.BigDecimal;
@@ -63,7 +65,8 @@ import java.util.Map;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 
-public class OceanBaseConnectorITCase extends OceanBaseTestBase {
+@Ignore
+public class OceanBaseOracleConnectorITCase extends OceanBaseOracleTestBase {
 
     @Override
     protected String getTestTable() {
@@ -77,11 +80,28 @@ public class OceanBaseConnectorITCase extends OceanBaseTestBase {
         return options;
     }
 
+    @Before
+    public void before() throws SQLException {
+        try (Connection connection = getConnection();
+                Statement statement = connection.createStatement()) {
+            statement.execute(
+                    String.format(
+                            " CREATE TABLE %s (\n"
+                                    + "    id number primary key, \n"
+                                    + "    name varchar(225), \n"
+                                    + "    description varchar(225), \n"
+                                    + "    weight number\n"
+                                    + ")",
+                            getTestTable()));
+        }
+    }
+
     @After
     public void after() throws Exception {
         try (Connection connection = getConnection();
                 Statement statement = connection.createStatement()) {
             statement.execute("DELETE FROM " + getTestTable());
+            statement.execute("DROP TABLE " + getTestTable());
         }
     }
 
@@ -99,10 +119,10 @@ public class OceanBaseConnectorITCase extends OceanBaseTestBase {
                         DataChangeRecord.KeyExtractor.simple(),
                         new OceanBaseRecordFlusher(connectorOptions));
 
-        OceanBaseDialect dialect = new OceanBaseMySQLDialect();
+        OceanBaseDialect dialect = new OceanBaseOracleDialect(connectorOptions);
         String database = getDatabaseName();
         String tableA = getTestTable() + "A";
-        String tableB = getTestTable() + "B";
+        String tableB = getTestTable().toUpperCase() + "b";
         String tableC = getTestTable() + "C";
 
         String tableFullNameA = dialect.getFullTableName(database, tableA);
@@ -137,21 +157,21 @@ public class OceanBaseConnectorITCase extends OceanBaseTestBase {
                                 tableA,
                                 SchemaChangeRecord.Type.CREATE,
                                 String.format(
-                                        "CREATE TABLE %s (a int(10) primary key, a1 int(10))",
+                                        "CREATE TABLE %s (A number primary key, a1 number)",
                                         tableFullNameA)),
                         new OceanBaseTestData(
                                 database,
                                 tableB,
                                 SchemaChangeRecord.Type.CREATE,
                                 String.format(
-                                        "CREATE TABLE %s (b int(10) primary key, b1 varchar(20))",
+                                        "CREATE TABLE %s (b number primary key, B1 varchar(20))",
                                         tableFullNameB)),
                         new OceanBaseTestData(
                                 database,
                                 tableC,
                                 SchemaChangeRecord.Type.CREATE,
                                 String.format(
-                                        "CREATE TABLE %s (c int(10), c1 varchar(20))",
+                                        "CREATE TABLE %s (C number, c1 varchar(20))",
                                         tableFullNameC)),
                         new OceanBaseTestData(
                                 "test",
@@ -396,10 +416,10 @@ public class OceanBaseConnectorITCase extends OceanBaseTestBase {
                         + "  'connector'='oceanbase',"
                         + "  'direct-load.enabled'='true',"
                         + "  'direct-load.host'='"
-                        + OB_SERVER.getHost()
+                        + HOST
                         + "',"
                         + "  'direct-load.port'='"
-                        + OB_SERVER.getActualPort(2882)
+                        + PORT
                         + "',"
                         + getOptionsString()
                         + ");");
@@ -459,15 +479,15 @@ public class OceanBaseConnectorITCase extends OceanBaseTestBase {
     private void validateSinkResults() throws SQLException, InterruptedException {
         List<String> expected =
                 Arrays.asList(
-                        "101,scooter,Small 2-wheel scooter,3.1400000000",
-                        "102,car battery,12V car battery,8.1000000000",
-                        "103,12-pack drill bits,12-pack of drill bits with sizes ranging from #40 to #3,0.8000000000",
-                        "104,hammer,12oz carpenter's hammer,0.7500000000",
-                        "105,hammer,14oz carpenter's hammer,0.8750000000",
-                        "106,hammer,16oz carpenter's hammer,1.0000000000",
-                        "107,rocks,box of assorted rocks,5.3000000000",
-                        "108,jacket,water resistent black wind breaker,0.1000000000",
-                        "109,spare tire,24 inch spare tire,22.2000000000");
+                        "101,scooter,Small 2-wheel scooter,3.14",
+                        "102,car battery,12V car battery,8.1",
+                        "103,12-pack drill bits,12-pack of drill bits with sizes ranging from #40 to #3,0.8",
+                        "104,hammer,12oz carpenter's hammer,0.75",
+                        "105,hammer,14oz carpenter's hammer,0.875",
+                        "106,hammer,16oz carpenter's hammer,1",
+                        "107,rocks,box of assorted rocks,5.3",
+                        "108,jacket,water resistent black wind breaker,0.1",
+                        "109,spare tire,24 inch spare tire,22.2");
 
         waitForTableCount(getTestTable(), expected.size());
 
