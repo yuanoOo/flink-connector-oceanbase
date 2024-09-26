@@ -19,7 +19,9 @@ package com.oceanbase.connector.flink;
 import com.oceanbase.connector.flink.sink.OceanBaseDynamicTableSink;
 import com.oceanbase.connector.flink.utils.OptionUtils;
 
+import org.apache.flink.api.common.RuntimeExecutionMode;
 import org.apache.flink.configuration.ConfigOption;
+import org.apache.flink.configuration.ExecutionOptions;
 import org.apache.flink.table.catalog.Column;
 import org.apache.flink.table.catalog.ResolvedSchema;
 import org.apache.flink.table.connector.sink.DynamicTableSink;
@@ -50,8 +52,10 @@ public class OceanBaseDynamicTableSinkFactory implements DynamicTableSinkFactory
                         resolvedSchema.getPrimaryKey().orElse(null));
         Map<String, String> options = context.getCatalogTable().getOptions();
         OptionUtils.printOptions(IDENTIFIER, options);
+        RuntimeExecutionMode runtimeExecutionMode =
+                context.getConfiguration().get(ExecutionOptions.RUNTIME_MODE);
         return new OceanBaseDynamicTableSink(
-                physicalSchema, new OceanBaseConnectorOptions(options));
+                physicalSchema, new OceanBaseConnectorOptions(options), runtimeExecutionMode);
     }
 
     @Override
