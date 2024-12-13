@@ -8,7 +8,7 @@ on:
       - ".*"
   push:
     branches:
-      - *
+      - "*"
 
 concurrency:
   group: ci-${{ github.event.pull_request.number || github.ref }}
