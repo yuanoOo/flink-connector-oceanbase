@@ -25,7 +25,6 @@ import com.oceanbase.connector.flink.table.RecordSerializationSchema;
 import com.oceanbase.connector.flink.table.TableInfo;
 
 import org.apache.flink.api.connector.sink2.SinkWriter;
-import org.apache.flink.table.data.RowData;
 
 import com.alipay.oceanbase.rpc.direct_load.ObDirectLoadBucket;
 import com.alipay.oceanbase.rpc.direct_load.exception.ObDirectLoadException;
@@ -50,11 +49,11 @@ import java.util.concurrent.TimeUnit;
 import static com.oceanbase.connector.flink.directload.DirectLoader.createObObj;
 
 /** The direct-load sink writer. see {@link SinkWriter}. */
-public class DirectLoadWriter implements SinkWriter<RowData> {
+public class DirectLoadWriter<T> implements SinkWriter<T> {
     private static final Logger LOG = LoggerFactory.getLogger(DirectLoadWriter.class);
     private static final int CORE_NUM = Runtime.getRuntime().availableProcessors();
 
-    private final RecordSerializationSchema<RowData> recordSerializer;
+    private final RecordSerializationSchema<T> recordSerializer;
     private final OBDirectLoadConnectorOptions connectorOptions;
     private final DirectLoader directLoader;
     private final Map<Thread, List<Record>> bufferMap = Maps.newConcurrentMap();
@@ -62,7 +61,7 @@ public class DirectLoadWriter implements SinkWriter<RowData> {
 
     public DirectLoadWriter(
             OBDirectLoadConnectorOptions connectorOptions,
-            RecordSerializationSchema<RowData> recordSerializer,
+            RecordSerializationSchema<T> recordSerializer,
             int numberOfTaskSlots) {
         this.connectorOptions = connectorOptions;
         this.recordSerializer = recordSerializer;
@@ -86,7 +85,7 @@ public class DirectLoadWriter implements SinkWriter<RowData> {
     }
 
     @Override
-    public void write(RowData element, Context context) throws IOException, InterruptedException {
+    public void write(T element, Context context) throws IOException, InterruptedException {
         Record record = recordSerializer.serialize(element);
         if (record == null) {
             return;
@@ -154,6 +153,15 @@ public class DirectLoadWriter implements SinkWriter<RowData> {
                 } else {
                     throw new RuntimeException(
                             "The direct-load write to oceanbase timeout after 600 seconds.");
+                }
+            } catch (Exception e) {
+                throw new RuntimeException("Failed to write to OceanBase.", e);
+            }
+        } else {
+            // Flush but do not commit during flink checkpoint.
+            try {
+                for (List<Record> buffer : bufferMap.values()) {
+                    flush(buffer);
                 }
             } catch (Exception e) {
                 throw new RuntimeException("Failed to write to OceanBase.", e);

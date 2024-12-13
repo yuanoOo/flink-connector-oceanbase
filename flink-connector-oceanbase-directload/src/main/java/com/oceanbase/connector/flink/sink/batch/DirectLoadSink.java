@@ -26,7 +26,7 @@ import org.apache.flink.table.data.RowData;
 import java.io.IOException;
 
 /** The direct-load sink. see {@link Sink}. */
-public class DirectLoadSink implements Sink<RowData> {
+public class DirectLoadSink<T> implements Sink<T> {
     private final OBDirectLoadConnectorOptions connectorOptions;
     private final RecordSerializationSchema<RowData> recordSerializer;
     private final int numberOfTaskSlots;
@@ -41,7 +41,7 @@ public class DirectLoadSink implements Sink<RowData> {
     }
 
     @Override
-    public SinkWriter<RowData> createWriter(InitContext context) throws IOException {
+    public SinkWriter<T> createWriter(InitContext context) throws IOException {
         return new DirectLoadWriter(connectorOptions, recordSerializer, numberOfTaskSlots);
     }
 }

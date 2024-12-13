@@ -65,7 +65,7 @@ public class OBDirectLoadITCase extends OceanBaseMySQLTestBase {
     public void testDirectLoadSink() throws Exception {
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
         env.setParallelism(1);
-        env.setRuntimeMode(RuntimeExecutionMode.BATCH);
+        // env.setRuntimeMode(RuntimeExecutionMode.BATCH);
         StreamTableEnvironment tEnv = StreamTableEnvironment.create(env);
 
         String createTableSql =

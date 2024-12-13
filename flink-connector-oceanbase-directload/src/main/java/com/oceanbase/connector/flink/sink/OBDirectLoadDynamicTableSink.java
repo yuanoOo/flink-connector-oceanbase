@@ -27,9 +27,9 @@ import org.apache.flink.api.common.RuntimeExecutionMode;
 import org.apache.flink.table.catalog.ResolvedSchema;
 import org.apache.flink.table.connector.ChangelogMode;
 import org.apache.flink.table.connector.sink.DynamicTableSink;
+import org.apache.flink.table.data.RowData;
 import org.apache.flink.types.RowKind;
 
-import org.apache.commons.lang3.NotImplementedException;
 import org.apache.commons.lang3.StringUtils;
 
 /** The direct-load dynamic table sink. see {@link DynamicTableSink}. */
@@ -64,8 +64,8 @@ public class OBDirectLoadDynamicTableSink implements DynamicTableSink {
     public SinkRuntimeProvider getSinkRuntimeProvider(Context context) {
         TableId tableId =
                 new TableId(connectorOptions.getSchemaName(), connectorOptions.getTableName());
-        DirectLoadSink directLoadSink =
-                new DirectLoadSink(
+        DirectLoadSink<RowData> directLoadSink =
+                new DirectLoadSink<>(
                         connectorOptions,
                         new OceanBaseRowDataSerializationSchema(
                                 new TableInfo(tableId, physicalSchema)),
@@ -86,8 +86,8 @@ public class OBDirectLoadDynamicTableSink implements DynamicTableSink {
             return new DirectLoadStreamSinkProvider(
                     (dataStream) -> dataStream.sinkTo(directLoadSink).setParallelism(1));
         } else {
-            throw new NotImplementedException(
-                    "The direct-load currently only supports running in flink batch execution mode.");
+            return new DirectLoadStreamSinkProvider(
+                    (dataStream) -> dataStream.sinkTo(directLoadSink).setParallelism(1));
         }
     }
 
