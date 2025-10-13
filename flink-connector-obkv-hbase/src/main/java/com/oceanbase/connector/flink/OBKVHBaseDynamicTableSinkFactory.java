@@ -17,13 +17,16 @@
 package com.oceanbase.connector.flink;
 
 import com.oceanbase.connector.flink.sink.OBKVHBaseDynamicTableSink;
+import com.oceanbase.connector.flink.source.OBKVHBaseDynamicTableSource;
 import com.oceanbase.connector.flink.utils.OptionUtils;
 
 import org.apache.flink.configuration.ConfigOption;
 import org.apache.flink.table.catalog.Column;
 import org.apache.flink.table.catalog.ResolvedSchema;
 import org.apache.flink.table.connector.sink.DynamicTableSink;
+import org.apache.flink.table.connector.source.DynamicTableSource;
 import org.apache.flink.table.factories.DynamicTableSinkFactory;
+import org.apache.flink.table.factories.DynamicTableSourceFactory;
 import org.apache.flink.table.factories.FactoryUtil;
 
 import java.util.HashSet;
@@ -32,9 +35,30 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.stream.Collectors;
 
-public class OBKVHBaseDynamicTableSinkFactory implements DynamicTableSinkFactory {
+public class OBKVHBaseDynamicTableSinkFactory
+        implements DynamicTableSourceFactory, DynamicTableSinkFactory {
 
     public static final String IDENTIFIER = "obkv-hbase";
+
+    @Override
+    public DynamicTableSource createDynamicTableSource(Context context) {
+        FactoryUtil.TableFactoryHelper helper = FactoryUtil.createTableFactoryHelper(this, context);
+        helper.validate();
+
+        ResolvedSchema resolvedSchema = context.getCatalogTable().getResolvedSchema();
+        ResolvedSchema physicalSchema =
+                new ResolvedSchema(
+                        resolvedSchema.getColumns().stream()
+                                .filter(Column::isPhysical)
+                                .collect(Collectors.toList()),
+                        resolvedSchema.getWatermarkSpecs(),
+                        resolvedSchema.getPrimaryKey().orElse(null));
+        Map<String, String> options = context.getCatalogTable().getOptions();
+        OptionUtils.printOptions(IDENTIFIER, options);
+        OBKVHBaseConnectorOptions connectorOptions = new OBKVHBaseConnectorOptions(options);
+        validateConnectorOptions(connectorOptions);
+        return new OBKVHBaseDynamicTableSource(physicalSchema, connectorOptions);
+    }
 
     @Override
     public DynamicTableSink createDynamicTableSink(Context context) {
@@ -52,7 +76,7 @@ public class OBKVHBaseDynamicTableSinkFactory implements DynamicTableSinkFactory
         Map<String, String> options = context.getCatalogTable().getOptions();
         OptionUtils.printOptions(IDENTIFIER, options);
         OBKVHBaseConnectorOptions connectorOptions = new OBKVHBaseConnectorOptions(options);
-        validateConnectorSinkOptions(connectorOptions);
+        validateConnectorOptions(connectorOptions);
         return new OBKVHBaseDynamicTableSink(physicalSchema, connectorOptions);
     }
 
@@ -85,10 +109,15 @@ public class OBKVHBaseDynamicTableSinkFactory implements DynamicTableSinkFactory
         options.add(OBKVHBaseConnectorOptions.BUFFER_SIZE);
         options.add(OBKVHBaseConnectorOptions.MAX_RETRIES);
         options.add(OBKVHBaseConnectorOptions.HBASE_PROPERTIES);
+        // Source related options
+        options.add(OBKVHBaseConnectorOptions.LOOKUP_CACHE_ENABLED);
+        options.add(OBKVHBaseConnectorOptions.LOOKUP_CACHE_MAX_ROWS);
+        options.add(OBKVHBaseConnectorOptions.LOOKUP_CACHE_TTL);
+        options.add(OBKVHBaseConnectorOptions.SCAN_CACHING);
         return options;
     }
 
-    private void validateConnectorSinkOptions(OBKVHBaseConnectorOptions connectorOptions) {
+    private void validateConnectorOptions(OBKVHBaseConnectorOptions connectorOptions) {
         if (connectorOptions.getOdpMode()) {
             Objects.requireNonNull(
                     connectorOptions.getOdpIP(), "'odp-ip' is required if 'odp-mode' is 'true'");
