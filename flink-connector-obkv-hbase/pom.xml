@@ -50,6 +50,14 @@ under the License.
             <scope>test</scope>
         </dependency>
 
+        <!-- Add disruptor for async logging in tests to eliminate warnings -->
+        <dependency>
+            <groupId>com.lmax</groupId>
+            <artifactId>disruptor</artifactId>
+            <version>3.4.4</version>
+            <scope>test</scope>
+        </dependency>
+
     </dependencies>
 
 </project>
