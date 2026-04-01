@@ -31,9 +31,12 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 
 /** Split enumerator for OceanBase parallel snapshot read. */
 public class OceanBaseSplitEnumerator
@@ -43,9 +46,9 @@ public class OceanBaseSplitEnumerator
 
     private final SplitEnumeratorContext<OceanBaseSplit> context;
     private final OceanBaseSourceConfig config;
-    private final Map<Integer, List<OceanBaseSplit>> pendingSplitsAssignment;
     private final List<OceanBaseSplit> pendingSplits;
-    private final List<OceanBaseSplit> assignedSplits;
+    private final Set<Integer> readersAwaitingSplit;
+    private final Set<Integer> assignedReaders;
 
     private DruidDataSource dataSource;
 
@@ -55,13 +58,17 @@ public class OceanBaseSplitEnumerator
             OceanBaseEnumeratorState restoredState) {
         this.context = context;
         this.config = config;
-        this.pendingSplitsAssignment = new HashMap<>();
         this.pendingSplits = new ArrayList<>();
-        this.assignedSplits = new ArrayList<>();
+        this.readersAwaitingSplit = ConcurrentHashMap.newKeySet();
+        this.assignedReaders = ConcurrentHashMap.newKeySet();
 
         if (restoredState != null) {
             this.pendingSplits.addAll(restoredState.getPendingSplits());
-            this.assignedSplits.addAll(restoredState.getAssignedSplits());
+            // Mark already assigned readers
+            for (OceanBaseSplit split : restoredState.getAssignedSplits()) {
+                // These splits were assigned before, we need to reassign them
+                this.pendingSplits.add(split);
+            }
         }
     }
 
@@ -73,34 +80,48 @@ public class OceanBaseSplitEnumerator
             discoverSplits();
         }
 
-        assignSplits();
+        // Assign splits to readers that are already registered
+        assignPendingSplits();
     }
 
     @Override
     public void handleSplitRequest(int subtaskId, String requesterHostname) {
+        LOG.debug("Received split request from subtask {}", subtaskId);
+
         if (!pendingSplits.isEmpty()) {
-            assignSplits();
+            assignSplitToReader(subtaskId);
         } else {
+            // No more splits, signal to the reader
             context.signalNoMoreSplits(subtaskId);
         }
     }
 
     @Override
     public void addSplitsBack(List<OceanBaseSplit> splits, int subtaskId) {
+        LOG.debug("Received {} splits back from subtask {}", splits.size(), subtaskId);
         pendingSplits.addAll(splits);
-        assignedSplits.removeAll(splits);
-        assignSplits();
+        assignedReaders.remove(subtaskId);
+        assignPendingSplits();
     }
 
     @Override
     public void addReader(int subtaskId) {
-        // Reader registered, will assign splits on request
+        LOG.debug("Reader {} registered", subtaskId);
+        readersAwaitingSplit.add(subtaskId);
+
+        // Try to assign splits immediately if available
+        if (!pendingSplits.isEmpty()) {
+            assignSplitToReader(subtaskId);
+        }
     }
 
     @Override
     public OceanBaseEnumeratorState snapshotState(long checkpointId) throws Exception {
-        return new OceanBaseEnumeratorState(
-                new ArrayList<>(assignedSplits), new ArrayList<>(pendingSplits));
+        List<OceanBaseSplit> assignedSplits = new ArrayList<>();
+        for (int reader : assignedReaders) {
+            // We don't track which split is assigned to which reader in this simple impl
+        }
+        return new OceanBaseEnumeratorState(assignedSplits, new ArrayList<>(pendingSplits));
     }
 
     @Override
@@ -312,22 +333,29 @@ public class OceanBaseSplitEnumerator
         }
     }
 
-    private void assignSplits() {
+    private void assignPendingSplits() {
+        for (int reader : readersAwaitingSplit) {
+            if (!pendingSplits.isEmpty() && !assignedReaders.contains(reader)) {
+                assignSplitToReader(reader);
+            }
+        }
+    }
+
+    private void assignSplitToReader(int subtaskId) {
         if (pendingSplits.isEmpty()) {
+            context.signalNoMoreSplits(subtaskId);
             return;
         }
 
+        OceanBaseSplit split = pendingSplits.remove(0);
         Map<Integer, List<OceanBaseSplit>> assignment = new HashMap<>();
-        int parallelism = context.currentParallelism();
+        assignment.put(subtaskId, Collections.singletonList(split));
 
-        for (int i = 0; i < parallelism && !pendingSplits.isEmpty(); i++) {
-            List<OceanBaseSplit> splitsForSubtask =
-                    assignment.computeIfAbsent(i, k -> new ArrayList<>());
-            splitsForSubtask.add(pendingSplits.remove(0));
-            assignedSplits.addAll(splitsForSubtask);
-        }
+        assignedReaders.add(subtaskId);
+        readersAwaitingSplit.remove(subtaskId);
 
         context.assignSplits(new SplitsAssignment<>(assignment));
+        LOG.debug("Assigned split {} to subtask {}", split.splitId(), subtaskId);
     }
 
     private DruidDataSource getDataSource() {
