@@ -182,8 +182,11 @@ public class OceanBaseSourceReader implements SourceReader<RowData, OceanBaseSpl
             case BOOLEAN:
                 return value;
             case TINYINT:
+                return ((Number) value).byteValue();
             case SMALLINT:
+                return ((Number) value).shortValue();
             case INTEGER:
+                return ((Number) value).intValue();
             case BIGINT:
                 return ((Number) value).longValue();
             case FLOAT:
