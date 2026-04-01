@@ -12,3 +12,4 @@
 # limitations under the License.
 
 com.oceanbase.connector.flink.OceanBaseDynamicTableSinkFactory
+com.oceanbase.connector.flink.source.OceanBaseTableSourceFactory
