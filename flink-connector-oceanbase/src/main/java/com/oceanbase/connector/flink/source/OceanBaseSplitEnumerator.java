@@ -315,15 +315,7 @@ public class OceanBaseSplitEnumerator
         List<Object> points = new ArrayList<>();
         points.add(null);
 
-        if (min instanceof Number && max instanceof Number) {
-            double minVal = ((Number) min).doubleValue();
-            double maxVal = ((Number) max).doubleValue();
-            double step = (maxVal - minVal) / numSplits;
-
-            for (int i = 1; i < numSplits; i++) {
-                points.add(minVal + step * i);
-            }
-        } else if (min instanceof BigDecimal && max instanceof BigDecimal) {
+        if (min instanceof BigDecimal && max instanceof BigDecimal) {
             BigDecimal minVal = (BigDecimal) min;
             BigDecimal maxVal = (BigDecimal) max;
             BigDecimal step =
@@ -332,6 +324,14 @@ public class OceanBaseSplitEnumerator
 
             for (int i = 1; i < numSplits; i++) {
                 points.add(minVal.add(step.multiply(new BigDecimal(i))));
+            }
+        } else if (min instanceof Number && max instanceof Number) {
+            double minVal = ((Number) min).doubleValue();
+            double maxVal = ((Number) max).doubleValue();
+            double step = (maxVal - minVal) / numSplits;
+
+            for (int i = 1; i < numSplits; i++) {
+                points.add(minVal + step * i);
             }
         } else {
             long rowCount = getRowCountCached();
@@ -349,6 +349,11 @@ public class OceanBaseSplitEnumerator
 
         points.add(null);
         return dedupeAndTrimSplitPoints(points);
+    }
+
+    List<Object> generateSplitPointsForTest(
+            String splitColumn, Object min, Object max, int numSplits) {
+        return generateSplitPoints(splitColumn, min, max, numSplits);
     }
 
     private Object querySplitPointByOffset(String splitColumn, long offset) {

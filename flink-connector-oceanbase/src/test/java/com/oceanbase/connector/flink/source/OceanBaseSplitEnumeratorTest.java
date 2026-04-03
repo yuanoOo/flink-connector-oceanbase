@@ -18,6 +18,7 @@ package com.oceanbase.connector.flink.source;
 
 import org.junit.jupiter.api.Test;
 
+import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -28,6 +29,26 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /** Unit tests for OceanBaseSplitEnumerator. */
 public class OceanBaseSplitEnumeratorTest {
+
+    @Test
+    public void testBigDecimalSplitPointsKeepDecimalPrecision() {
+        OceanBaseSplitEnumerator enumerator = createEnumerator();
+        List<Object> points =
+                enumerator.generateSplitPointsForTest(
+                        "amount", new BigDecimal("0.00"), new BigDecimal("10.00"), 4);
+
+        assertEquals(5, points.size());
+        assertNull(points.get(0));
+        assertNull(points.get(points.size() - 1));
+
+        assertTrue(points.get(1) instanceof BigDecimal);
+        assertTrue(points.get(2) instanceof BigDecimal);
+        assertTrue(points.get(3) instanceof BigDecimal);
+
+        assertEquals(0, new BigDecimal("2.5").compareTo((BigDecimal) points.get(1)));
+        assertEquals(0, new BigDecimal("5.0").compareTo((BigDecimal) points.get(2)));
+        assertEquals(0, new BigDecimal("7.5").compareTo((BigDecimal) points.get(3)));
+    }
 
     @Test
     public void testOracleModeDefaultSplitColumn() {
@@ -141,6 +162,21 @@ public class OceanBaseSplitEnumeratorTest {
 
         points.add(null); // Last split ends at null
         return points;
+    }
+
+    private OceanBaseSplitEnumerator createEnumerator() {
+        OceanBaseSourceConfig config =
+                new OceanBaseSourceConfig(
+                        "jdbc:oceanbase://127.0.0.1:2881/test",
+                        "user",
+                        "pwd",
+                        "test_schema",
+                        "test_table",
+                        "MySQL",
+                        8096,
+                        "id",
+                        1024);
+        return new OceanBaseSplitEnumerator(null, config, null);
     }
 
     /** Simple test config implementation. */

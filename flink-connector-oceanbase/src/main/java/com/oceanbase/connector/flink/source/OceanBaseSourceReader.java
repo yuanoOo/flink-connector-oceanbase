@@ -62,6 +62,7 @@ public class OceanBaseSourceReader implements SourceReader<RowData, OceanBaseSpl
     private OceanBaseSplit currentSplit;
     private DruidDataSource dataSource;
     private volatile boolean running = true;
+    private volatile boolean noMoreSplits = false;
     private volatile CompletableFuture<Void> availabilityFuture = new CompletableFuture<>();
 
     public OceanBaseSourceReader(
@@ -106,6 +107,8 @@ public class OceanBaseSourceReader implements SourceReader<RowData, OceanBaseSpl
     @Override
     public void notifyNoMoreSplits() {
         LOG.info("No more splits will be assigned");
+        noMoreSplits = true;
+        availabilityFuture.complete(null);
     }
 
     @Override
@@ -119,7 +122,7 @@ public class OceanBaseSourceReader implements SourceReader<RowData, OceanBaseSpl
     @Override
     public CompletableFuture<Void> isAvailable() {
         synchronized (pendingSplits) {
-            if (currentSplit != null || !pendingSplits.isEmpty()) {
+            if (currentSplit != null || !pendingSplits.isEmpty() || noMoreSplits) {
                 return CompletableFuture.completedFuture(null);
             }
             if (availabilityFuture.isDone()) {
@@ -142,7 +145,7 @@ public class OceanBaseSourceReader implements SourceReader<RowData, OceanBaseSpl
         }
 
         if (currentSplit == null) {
-            return InputStatus.NOTHING_AVAILABLE;
+            return noMoreSplits ? InputStatus.END_OF_INPUT : InputStatus.NOTHING_AVAILABLE;
         }
 
         try {
@@ -155,9 +158,10 @@ public class OceanBaseSourceReader implements SourceReader<RowData, OceanBaseSpl
         }
 
         synchronized (pendingSplits) {
-            return pendingSplits.isEmpty()
-                    ? InputStatus.NOTHING_AVAILABLE
-                    : InputStatus.MORE_AVAILABLE;
+            if (!pendingSplits.isEmpty()) {
+                return InputStatus.MORE_AVAILABLE;
+            }
+            return noMoreSplits ? InputStatus.END_OF_INPUT : InputStatus.NOTHING_AVAILABLE;
         }
     }
 
@@ -225,6 +229,7 @@ public class OceanBaseSourceReader implements SourceReader<RowData, OceanBaseSpl
             case BIGINT:
                 return ((Number) value).longValue();
             case FLOAT:
+                return ((Number) value).floatValue();
             case DOUBLE:
                 return ((Number) value).doubleValue();
             case DECIMAL:
@@ -240,13 +245,13 @@ public class OceanBaseSourceReader implements SourceReader<RowData, OceanBaseSpl
             case DATE:
                 {
                     if (value instanceof java.sql.Date) {
-                        return ((java.sql.Date) value).toLocalDate().toEpochDay();
+                        return (int) ((java.sql.Date) value).toLocalDate().toEpochDay();
                     }
                     if (value instanceof LocalDate) {
-                        return ((LocalDate) value).toEpochDay();
+                        return (int) ((LocalDate) value).toEpochDay();
                     }
                     if (value instanceof String) {
-                        return LocalDate.parse((String) value).toEpochDay();
+                        return (int) LocalDate.parse((String) value).toEpochDay();
                     }
                     return value;
                 }
@@ -290,6 +295,10 @@ public class OceanBaseSourceReader implements SourceReader<RowData, OceanBaseSpl
             default:
                 return value;
         }
+    }
+
+    Object convertValueForTest(Object value, LogicalType type) {
+        return convertValue(value, type);
     }
 
     String buildQueryForTest(OceanBaseSplit split) {

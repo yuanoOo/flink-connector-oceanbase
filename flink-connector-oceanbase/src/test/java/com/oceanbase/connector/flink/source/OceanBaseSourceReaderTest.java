@@ -16,26 +16,27 @@
 
 package com.oceanbase.connector.flink.source;
 
-import org.apache.flink.table.types.logical.BigIntType;
-import org.apache.flink.table.types.logical.DateType;
-import org.apache.flink.table.types.logical.DecimalType;
-import org.apache.flink.table.types.logical.DoubleType;
-import org.apache.flink.table.types.logical.FloatType;
-import org.apache.flink.table.types.logical.IntType;
+import org.apache.flink.core.io.InputStatus;
+import org.apache.flink.table.api.DataTypes;
+import org.apache.flink.table.data.DecimalData;
+import org.apache.flink.table.data.StringData;
+import org.apache.flink.table.data.TimestampData;
 import org.apache.flink.table.types.logical.LogicalType;
-import org.apache.flink.table.types.logical.SmallIntType;
-import org.apache.flink.table.types.logical.TimeType;
-import org.apache.flink.table.types.logical.TimestampType;
-import org.apache.flink.table.types.logical.TinyIntType;
 
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
+import java.nio.charset.StandardCharsets;
 import java.sql.Date;
 import java.sql.Time;
 import java.sql.Timestamp;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.LocalTime;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -43,180 +44,235 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 public class OceanBaseSourceReaderTest {
 
     @Test
+    public void testCharAndVarcharConversion() {
+        OceanBaseSourceReader reader = createReader();
+
+        Object charResult = reader.convertValueForTest("A", logicalType(DataTypes.CHAR(1)));
+        Object varcharResult = reader.convertValueForTest("hello", logicalType(DataTypes.STRING()));
+
+        assertInstanceOf(StringData.class, charResult);
+        assertInstanceOf(StringData.class, varcharResult);
+        assertEquals("A", charResult.toString());
+        assertEquals("hello", varcharResult.toString());
+    }
+
+    @Test
+    public void testBooleanConversion() {
+        OceanBaseSourceReader reader = createReader();
+
+        Object trueResult = reader.convertValueForTest(1, logicalType(DataTypes.BOOLEAN()));
+        Object falseResult = reader.convertValueForTest(0, logicalType(DataTypes.BOOLEAN()));
+        Object directResult = reader.convertValueForTest(true, logicalType(DataTypes.BOOLEAN()));
+
+        assertEquals(true, trueResult);
+        assertEquals(false, falseResult);
+        assertEquals(true, directResult);
+    }
+
+    @Test
     public void testTinyIntConversion() {
-        LogicalType type = new TinyIntType();
-        Object result = convertValue((byte) 127, type);
+        OceanBaseSourceReader reader = createReader();
+        Object result = reader.convertValueForTest((byte) 127, logicalType(DataTypes.TINYINT()));
         assertTrue(result instanceof Byte);
         assertEquals((byte) 127, result);
     }
 
     @Test
     public void testSmallIntConversion() {
-        LogicalType type = new SmallIntType();
-        Object result = convertValue((short) 32767, type);
+        OceanBaseSourceReader reader = createReader();
+        Object result =
+                reader.convertValueForTest((short) 32767, logicalType(DataTypes.SMALLINT()));
         assertTrue(result instanceof Short);
         assertEquals((short) 32767, result);
     }
 
     @Test
     public void testIntegerConversion() {
-        LogicalType type = new IntType();
-        Object result = convertValue(12345, type);
+        OceanBaseSourceReader reader = createReader();
+        Object result = reader.convertValueForTest(12345, logicalType(DataTypes.INT()));
         assertTrue(result instanceof Integer);
         assertEquals(12345, result);
     }
 
     @Test
     public void testBigIntConversion() {
-        LogicalType type = new BigIntType();
-        Object result = convertValue(123456789L, type);
+        OceanBaseSourceReader reader = createReader();
+        Object result = reader.convertValueForTest(123456789L, logicalType(DataTypes.BIGINT()));
         assertTrue(result instanceof Long);
         assertEquals(123456789L, result);
     }
 
     @Test
     public void testFloatConversion() {
-        LogicalType type = new FloatType();
-        Object result = convertValue(3.14f, type);
-        assertTrue(result instanceof Double);
-        assertEquals(3.14, (Double) result, 0.001);
+        OceanBaseSourceReader reader = createReader();
+        Object result = reader.convertValueForTest(3.14f, logicalType(DataTypes.FLOAT()));
+        assertTrue(result instanceof Float);
+        assertEquals(3.14f, (Float) result, 0.001f);
     }
 
     @Test
     public void testDoubleConversion() {
-        LogicalType type = new DoubleType();
-        Object result = convertValue(3.14159265358979, type);
+        OceanBaseSourceReader reader = createReader();
+        Object result =
+                reader.convertValueForTest(3.14159265358979, logicalType(DataTypes.DOUBLE()));
         assertTrue(result instanceof Double);
         assertEquals(3.14159265358979, result);
     }
 
     @Test
     public void testDecimalConversion() {
-        LogicalType type = new DecimalType(20, 10);
+        OceanBaseSourceReader reader = createReader();
         BigDecimal bd = new BigDecimal("12345.1234567890");
-        Object result = convertValue(bd, type);
-        assertTrue(result instanceof org.apache.flink.table.data.DecimalData);
+        Object result = reader.convertValueForTest(bd, logicalType(DataTypes.DECIMAL(20, 10)));
+        assertInstanceOf(DecimalData.class, result);
+        assertEquals(0, bd.compareTo(((DecimalData) result).toBigDecimal()));
     }
 
     @Test
     public void testDateConversionFromSqlDate() {
-        LogicalType type = new DateType();
-        long epochDay = System.currentTimeMillis() / (24L * 60L * 60L * 1000L);
-        Date date = new Date(epochDay * 24L * 60L * 60L * 1000L);
-        Object result = convertValue(date, type);
-        assertTrue(result instanceof Long);
-        assertEquals(date.toLocalDate().toEpochDay(), result);
+        OceanBaseSourceReader reader = createReader();
+        Date date = Date.valueOf("2025-01-02");
+        Object result = reader.convertValueForTest(date, logicalType(DataTypes.DATE()));
+        assertTrue(result instanceof Integer);
+        assertEquals((int) date.toLocalDate().toEpochDay(), result);
+    }
+
+    @Test
+    public void testDateConversionFromLocalDateAndString() {
+        OceanBaseSourceReader reader = createReader();
+        LocalDate date = LocalDate.of(2025, 2, 3);
+        Object localDateResult = reader.convertValueForTest(date, logicalType(DataTypes.DATE()));
+        Object stringResult =
+                reader.convertValueForTest("2025-02-03", logicalType(DataTypes.DATE()));
+        assertEquals((int) date.toEpochDay(), localDateResult);
+        assertEquals((int) date.toEpochDay(), stringResult);
     }
 
     @Test
     public void testTimeConversionFromSqlTime() {
-        LogicalType type = new TimeType();
+        OceanBaseSourceReader reader = createReader();
         Time time = Time.valueOf("12:34:56");
-        Object result = convertValue(time, type);
-        assertEquals(45296000L, result);
+        Object result = reader.convertValueForTest(time, logicalType(DataTypes.TIME(0)));
+        assertEquals(45296000, result);
     }
 
     @Test
-    public void testTimestampConversionFromString() {
-        LogicalType type = new TimestampType();
+    public void testTimeConversionFromLocalTime() {
+        OceanBaseSourceReader reader = createReader();
+        LocalTime time = LocalTime.of(12, 34, 56);
+        Object result = reader.convertValueForTest(time, logicalType(DataTypes.TIME(0)));
+        assertEquals(45296000, result);
+    }
+
+    @Test
+    public void testTimestampConversion() {
+        OceanBaseSourceReader reader = createReader();
+        Timestamp ts = Timestamp.valueOf("2025-01-01 10:00:00");
+        Object timestampResult =
+                reader.convertValueForTest(ts, logicalType(DataTypes.TIMESTAMP(3)));
+        Object ldtResult =
+                reader.convertValueForTest(
+                        LocalDateTime.of(2025, 1, 1, 10, 0, 0),
+                        logicalType(DataTypes.TIMESTAMP(3)));
+
+        assertInstanceOf(TimestampData.class, timestampResult);
+        assertInstanceOf(TimestampData.class, ldtResult);
+    }
+
+    @Test
+    public void testTimestampConversionFromStringAndFallback() {
+        OceanBaseSourceReader reader = createReader();
         String value = "2025-01-01 10:00:00.0";
-        Object result = convertValue(value, type);
-        assertTrue(result != null);
+        Object result = reader.convertValueForTest(value, logicalType(DataTypes.TIMESTAMP(3)));
+        Object fallback = reader.convertValueForTest("bad-ts", logicalType(DataTypes.TIMESTAMP(3)));
+        assertInstanceOf(TimestampData.class, result);
+        assertEquals("bad-ts", fallback);
+    }
+
+    @Test
+    public void testTimestampLtzConversion() {
+        OceanBaseSourceReader reader = createReader();
+        Timestamp ts = Timestamp.valueOf("2025-01-01 10:00:00");
+        Object result = reader.convertValueForTest(ts, logicalType(DataTypes.TIMESTAMP_LTZ(3)));
+        assertInstanceOf(TimestampData.class, result);
+    }
+
+    @Test
+    public void testBinaryAndVarbinaryConversion() {
+        OceanBaseSourceReader reader = createReader();
+        byte[] bytes = new byte[] {1, 2, 3};
+        Object binaryResult = reader.convertValueForTest(bytes, logicalType(DataTypes.BINARY(3)));
+        Object varbinaryResult =
+                reader.convertValueForTest("abc", logicalType(DataTypes.VARBINARY(16)));
+
+        assertInstanceOf(byte[].class, binaryResult);
+        assertInstanceOf(byte[].class, varbinaryResult);
+        assertArrayEquals(bytes, (byte[]) binaryResult);
+        assertArrayEquals("abc".getBytes(StandardCharsets.UTF_8), (byte[]) varbinaryResult);
     }
 
     @Test
     public void testNullValueConversion() {
-        LogicalType type = new IntType();
-        Object result = convertValue(null, type);
+        OceanBaseSourceReader reader = createReader();
+        Object result = reader.convertValueForTest(null, logicalType(DataTypes.INT()));
         assertNull(result);
     }
 
     @Test
     public void testNumberToIntegerConversion() {
-        // Test that Long from JDBC is correctly converted to Integer
-        LogicalType type = new IntType();
-        Object result = convertValue(100L, type); // JDBC returns Long for INT
+        OceanBaseSourceReader reader = createReader();
+        Object result =
+                reader.convertValueForTest(100L, logicalType(DataTypes.INT())); // JDBC returns Long
         assertTrue(result instanceof Integer);
         assertEquals(100, result);
     }
 
     @Test
     public void testNumberToSmallIntConversion() {
-        // Test that Long from JDBC is correctly converted to Short
-        LogicalType type = new SmallIntType();
-        Object result = convertValue(100L, type);
+        OceanBaseSourceReader reader = createReader();
+        Object result = reader.convertValueForTest(100L, logicalType(DataTypes.SMALLINT()));
         assertTrue(result instanceof Short);
         assertEquals((short) 100, result);
     }
 
     @Test
     public void testNumberToTinyIntConversion() {
-        // Test that Long from JDBC is correctly converted to Byte
-        LogicalType type = new TinyIntType();
-        Object result = convertValue(100L, type);
+        OceanBaseSourceReader reader = createReader();
+        Object result = reader.convertValueForTest(100L, logicalType(DataTypes.TINYINT()));
         assertTrue(result instanceof Byte);
         assertEquals((byte) 100, result);
     }
 
-    // Helper method that mirrors the convertValue logic in OceanBaseSourceReader
-    private Object convertValue(Object value, LogicalType type) {
-        if (value == null) {
-            return null;
-        }
+    @Test
+    public void testEndOfInputAfterNoMoreSplits() throws Exception {
+        OceanBaseSourceReader reader = createReader();
+        reader.notifyNoMoreSplits();
+        assertEquals(InputStatus.END_OF_INPUT, reader.pollNext(null));
+    }
 
-        switch (type.getTypeRoot()) {
-            case TINYINT:
-                return ((Number) value).byteValue();
-            case SMALLINT:
-                return ((Number) value).shortValue();
-            case INTEGER:
-                return ((Number) value).intValue();
-            case BIGINT:
-                return ((Number) value).longValue();
-            case FLOAT:
-            case DOUBLE:
-                return ((Number) value).doubleValue();
-            case DECIMAL:
-                DecimalType decimalType = (DecimalType) type;
-                return org.apache.flink.table.data.DecimalData.fromBigDecimal(
-                        (BigDecimal) value, decimalType.getPrecision(), decimalType.getScale());
-            case VARCHAR:
-            case CHAR:
-                return org.apache.flink.table.data.StringData.fromString(value.toString());
-            case BOOLEAN:
-                return value;
-            case DATE:
-                if (value instanceof Date) {
-                    return ((Date) value).toLocalDate().toEpochDay();
-                }
-                if (value instanceof java.time.LocalDate) {
-                    return ((java.time.LocalDate) value).toEpochDay();
-                }
-                return value;
-            case TIME_WITHOUT_TIME_ZONE:
-                if (value instanceof Time) {
-                    return ((Time) value).toLocalTime().toSecondOfDay() * 1000L;
-                }
-                if (value instanceof java.time.LocalTime) {
-                    return ((java.time.LocalTime) value).toSecondOfDay() * 1000L;
-                }
-                return value;
-            case TIMESTAMP_WITHOUT_TIME_ZONE:
-                if (value instanceof Timestamp) {
-                    return org.apache.flink.table.data.TimestampData.fromTimestamp(
-                            (Timestamp) value);
-                }
-                if (value instanceof java.time.LocalDateTime) {
-                    return org.apache.flink.table.data.TimestampData.fromLocalDateTime(
-                            (java.time.LocalDateTime) value);
-                }
-                if (value instanceof String) {
-                    return org.apache.flink.table.data.TimestampData.fromTimestamp(
-                            Timestamp.valueOf((String) value));
-                }
-                return value;
-            default:
-                return value;
-        }
+    @Test
+    public void testNothingAvailableBeforeNoMoreSplits() throws Exception {
+        OceanBaseSourceReader reader = createReader();
+        assertEquals(InputStatus.NOTHING_AVAILABLE, reader.pollNext(null));
+    }
+
+    private OceanBaseSourceReader createReader() {
+        OceanBaseSourceConfig config =
+                new OceanBaseSourceConfig(
+                        "jdbc:oceanbase://127.0.0.1:2881/test",
+                        "user",
+                        "pwd",
+                        "test_db",
+                        "products",
+                        "MySQL",
+                        1024,
+                        "id",
+                        128);
+        return new OceanBaseSourceReader(
+                null, config, DataTypes.ROW(DataTypes.FIELD("f", DataTypes.STRING())));
+    }
+
+    private LogicalType logicalType(org.apache.flink.table.types.DataType dataType) {
+        return dataType.getLogicalType();
     }
 }
