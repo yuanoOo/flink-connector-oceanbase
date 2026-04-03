@@ -19,6 +19,7 @@ package com.oceanbase.connector.flink.source;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
+import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.Arrays;
 
@@ -58,6 +59,39 @@ public class OceanBaseEnumeratorStateSerializerTest {
 
         assertEquals(0, restored.getInFlightSplits().size());
         assertEquals(0, restored.getPendingSplits().size());
+    }
+
+    @Test
+    public void testFullCheckpointRestoreWithMixedBoundaryTypes() throws IOException {
+        OceanBaseSplit longSplit = new OceanBaseSplit("0", "db", "orders", "id", 1L, 1000L);
+        OceanBaseSplit stringSplit =
+                new OceanBaseSplit("1", "db", "orders", "ROWID", "AAAB", "AAAC");
+        OceanBaseSplit decimalSplit =
+                new OceanBaseSplit(
+                        "2",
+                        "db",
+                        "orders",
+                        "amount",
+                        new BigDecimal("100.50"),
+                        new BigDecimal("999.99"));
+        OceanBaseSplit nullColumnSplit = new OceanBaseSplit("3", "db", "orders", null, null, null);
+
+        OceanBaseEnumeratorState original =
+                new OceanBaseEnumeratorState(
+                        Arrays.asList(longSplit, stringSplit),
+                        Arrays.asList(decimalSplit, nullColumnSplit));
+
+        OceanBaseEnumeratorStateSerializer serializer = new OceanBaseEnumeratorStateSerializer();
+        byte[] bytes = serializer.serialize(original);
+        OceanBaseEnumeratorState restored = serializer.deserialize(serializer.getVersion(), bytes);
+
+        assertEquals(2, restored.getInFlightSplits().size());
+        assertEquals(2, restored.getPendingSplits().size());
+
+        assertSplitEquals(longSplit, restored.getInFlightSplits().get(0));
+        assertSplitEquals(stringSplit, restored.getInFlightSplits().get(1));
+        assertSplitEquals(decimalSplit, restored.getPendingSplits().get(0));
+        assertSplitEquals(nullColumnSplit, restored.getPendingSplits().get(1));
     }
 
     private void assertSplitEquals(OceanBaseSplit expected, OceanBaseSplit actual) {

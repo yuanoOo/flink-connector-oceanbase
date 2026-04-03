@@ -17,6 +17,7 @@
 package com.oceanbase.connector.flink;
 
 import com.oceanbase.connector.flink.sink.OceanBaseDynamicTableSink;
+import com.oceanbase.connector.flink.source.OceanBaseTableSourceFactory;
 import com.oceanbase.connector.flink.utils.OptionUtils;
 
 import org.apache.flink.configuration.ConfigOption;
@@ -84,6 +85,11 @@ public class OceanBaseDynamicTableSinkFactory implements DynamicTableSinkFactory
         options.add(OceanBaseConnectorOptions.MEMSTORE_CHECK_INTERVAL);
         options.add(OceanBaseConnectorOptions.PARTITION_ENABLED);
         options.add(OceanBaseConnectorOptions.TABLE_ORACLE_TENANT_CASE_INSENSITIVE);
+        // Tolerate source-only options since both factories share the "oceanbase" identifier
+        options.add(OceanBaseTableSourceFactory.COMPATIBLE_MODE);
+        options.add(OceanBaseTableSourceFactory.SPLIT_SIZE);
+        options.add(OceanBaseTableSourceFactory.CHUNK_KEY_COLUMN);
+        options.add(OceanBaseTableSourceFactory.FETCH_SIZE);
         return options;
     }
 }

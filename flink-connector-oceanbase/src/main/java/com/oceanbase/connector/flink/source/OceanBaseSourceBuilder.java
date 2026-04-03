@@ -27,7 +27,7 @@ public class OceanBaseSourceBuilder {
     private String schemaName;
     private String tableName;
     private String compatibleMode = "MySQL";
-    private int splitSize = 8096;
+    private int splitSize = 8192;
     private String chunkKeyColumn;
     private int fetchSize = 1024;
     private DataType producedDataType;

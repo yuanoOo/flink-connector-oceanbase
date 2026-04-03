@@ -60,10 +60,15 @@ public class OceanBaseSourceReader implements SourceReader<RowData, OceanBaseSpl
     private final LogicalType[] fieldTypes;
     private final Deque<OceanBaseSplit> pendingSplits = new ArrayDeque<>();
     private OceanBaseSplit currentSplit;
-    private DruidDataSource dataSource;
+    private volatile DruidDataSource dataSource;
     private volatile boolean running = true;
     private volatile boolean noMoreSplits = false;
     private volatile CompletableFuture<Void> availabilityFuture = new CompletableFuture<>();
+
+    // Cursor state for incremental reading
+    private Connection currentConnection;
+    private PreparedStatement currentStatement;
+    private ResultSet currentResultSet;
 
     public OceanBaseSourceReader(
             SourceReaderContext context, OceanBaseSourceConfig config, DataType producedDataType) {
@@ -114,6 +119,7 @@ public class OceanBaseSourceReader implements SourceReader<RowData, OceanBaseSpl
     @Override
     public void close() throws Exception {
         running = false;
+        closeCurrentCursor();
         if (dataSource != null) {
             dataSource.close();
         }
@@ -138,30 +144,88 @@ public class OceanBaseSourceReader implements SourceReader<RowData, OceanBaseSpl
             return InputStatus.NOTHING_AVAILABLE;
         }
 
-        if (currentSplit == null) {
-            synchronized (pendingSplits) {
-                currentSplit = pendingSplits.pollFirst();
+        // If no cursor is open, pick the next split
+        if (currentResultSet == null) {
+            if (currentSplit == null) {
+                synchronized (pendingSplits) {
+                    currentSplit = pendingSplits.pollFirst();
+                }
             }
+
+            if (currentSplit == null) {
+                return noMoreSplits ? InputStatus.END_OF_INPUT : InputStatus.NOTHING_AVAILABLE;
+            }
+
+            // Open cursor for current split
+            openCursorForSplit(currentSplit);
         }
 
-        if (currentSplit == null) {
-            return noMoreSplits ? InputStatus.END_OF_INPUT : InputStatus.NOTHING_AVAILABLE;
-        }
-
+        // Read one row from the cursor
         try {
-            readSplit(currentSplit, output);
-            currentSplit = null;
-            requestSplit();
+            if (currentResultSet.next()) {
+                RowData row = convertToRowData(currentResultSet);
+                output.collect(row);
+                return InputStatus.MORE_AVAILABLE;
+            } else {
+                // Split exhausted
+                closeCurrentCursor();
+                currentSplit = null;
+                requestSplit();
+
+                synchronized (pendingSplits) {
+                    if (!pendingSplits.isEmpty()) {
+                        return InputStatus.MORE_AVAILABLE;
+                    }
+                    return noMoreSplits ? InputStatus.END_OF_INPUT : InputStatus.NOTHING_AVAILABLE;
+                }
+            }
         } catch (SQLException e) {
             LOG.error("Error reading split: {}", currentSplit, e);
+            closeCurrentCursor();
             throw new RuntimeException("Failed to read split: " + currentSplit.splitId(), e);
         }
+    }
 
-        synchronized (pendingSplits) {
-            if (!pendingSplits.isEmpty()) {
-                return InputStatus.MORE_AVAILABLE;
+    private void openCursorForSplit(OceanBaseSplit split) throws SQLException {
+        List<Object> params = new ArrayList<>();
+        String sql = buildQuerySQL(split, params);
+        LOG.info("Executing query for split {}: {}", split.splitId(), sql);
+
+        currentConnection = getDataSource().getConnection();
+        currentStatement =
+                currentConnection.prepareStatement(
+                        sql, ResultSet.TYPE_FORWARD_ONLY, ResultSet.CONCUR_READ_ONLY);
+        for (int i = 0; i < params.size(); i++) {
+            currentStatement.setObject(i + 1, params.get(i));
+        }
+        currentStatement.setFetchSize(config.getFetchSize());
+        currentResultSet = currentStatement.executeQuery();
+    }
+
+    private void closeCurrentCursor() {
+        if (currentResultSet != null) {
+            try {
+                currentResultSet.close();
+            } catch (SQLException e) {
+                LOG.warn("Failed to close ResultSet", e);
             }
-            return noMoreSplits ? InputStatus.END_OF_INPUT : InputStatus.NOTHING_AVAILABLE;
+            currentResultSet = null;
+        }
+        if (currentStatement != null) {
+            try {
+                currentStatement.close();
+            } catch (SQLException e) {
+                LOG.warn("Failed to close PreparedStatement", e);
+            }
+            currentStatement = null;
+        }
+        if (currentConnection != null) {
+            try {
+                currentConnection.close();
+            } catch (SQLException e) {
+                LOG.warn("Failed to close Connection", e);
+            }
+            currentConnection = null;
         }
     }
 
@@ -170,29 +234,6 @@ public class OceanBaseSourceReader implements SourceReader<RowData, OceanBaseSpl
             context.sendSplitRequest();
         } catch (Exception e) {
             LOG.debug("Failed to request more splits", e);
-        }
-    }
-
-    private void readSplit(OceanBaseSplit split, ReaderOutput<RowData> output) throws SQLException {
-        List<Object> params = new ArrayList<>();
-        String sql = buildQuerySQL(split, params);
-        LOG.info("Executing query for split {}: {}", split.splitId(), sql);
-
-        try (Connection conn = getDataSource().getConnection();
-                PreparedStatement stmt =
-                        conn.prepareStatement(
-                                sql, ResultSet.TYPE_FORWARD_ONLY, ResultSet.CONCUR_READ_ONLY)) {
-            for (int i = 0; i < params.size(); i++) {
-                stmt.setObject(i + 1, params.get(i));
-            }
-            stmt.setFetchSize(config.getFetchSize());
-
-            try (ResultSet rs = stmt.executeQuery()) {
-                while (rs.next()) {
-                    RowData row = convertToRowData(rs);
-                    output.collect(row);
-                }
-            }
         }
     }
 
@@ -319,9 +360,9 @@ public class OceanBaseSourceReader implements SourceReader<RowData, OceanBaseSpl
     private String buildQuerySQL(OceanBaseSplit split, List<Object> params) {
         StringBuilder sql = new StringBuilder();
         sql.append("SELECT * FROM ");
-        sql.append(quoteIdentifier(split.getSchemaName()))
+        sql.append(config.quoteIdentifier(split.getSchemaName()))
                 .append(".")
-                .append(quoteIdentifier(split.getTableName()));
+                .append(config.quoteIdentifier(split.getTableName()));
 
         String splitColumn = split.getSplitColumn();
         if (splitColumn != null) {
@@ -331,29 +372,21 @@ public class OceanBaseSourceReader implements SourceReader<RowData, OceanBaseSpl
 
             sql.append(" WHERE ");
             if (split.isFirstSplit()) {
-                sql.append(quoteIdentifier(splitColumn)).append(" < ?");
+                sql.append(config.quoteIdentifier(splitColumn)).append(" < ?");
                 params.add(split.getSplitEnd());
             } else if (split.isLastSplit()) {
-                sql.append(quoteIdentifier(splitColumn)).append(" >= ?");
+                sql.append(config.quoteIdentifier(splitColumn)).append(" >= ?");
                 params.add(split.getSplitStart());
             } else {
-                sql.append(quoteIdentifier(splitColumn))
+                sql.append(config.quoteIdentifier(splitColumn))
                         .append(" >= ? AND ")
-                        .append(quoteIdentifier(splitColumn))
+                        .append(config.quoteIdentifier(splitColumn))
                         .append(" < ?");
                 params.add(split.getSplitStart());
                 params.add(split.getSplitEnd());
             }
         }
         return sql.toString();
-    }
-
-    private String quoteIdentifier(String identifier) {
-        if (config.isOracleMode()) {
-            return "\"" + identifier + "\"";
-        } else {
-            return "`" + identifier + "`";
-        }
     }
 
     private DruidDataSource getDataSource() {
@@ -366,7 +399,7 @@ public class OceanBaseSourceReader implements SourceReader<RowData, OceanBaseSpl
                     dataSource.setPassword(config.getPassword());
                     dataSource.setInitialSize(1);
                     dataSource.setMinIdle(1);
-                    dataSource.setMaxActive(10);
+                    dataSource.setMaxActive(2);
                     dataSource.setMaxWait(30000);
                 }
             }

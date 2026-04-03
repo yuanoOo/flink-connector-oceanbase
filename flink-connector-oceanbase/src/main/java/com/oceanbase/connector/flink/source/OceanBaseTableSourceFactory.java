@@ -16,6 +16,9 @@
 
 package com.oceanbase.connector.flink.source;
 
+import com.oceanbase.connector.flink.ConnectorOptions;
+import com.oceanbase.connector.flink.OceanBaseConnectorOptions;
+
 import org.apache.flink.configuration.ConfigOption;
 import org.apache.flink.configuration.ConfigOptions;
 import org.apache.flink.configuration.ReadableConfig;
@@ -32,36 +35,6 @@ public class OceanBaseTableSourceFactory implements DynamicTableSourceFactory {
 
     public static final String IDENTIFIER = "oceanbase";
 
-    public static final ConfigOption<String> URL =
-            ConfigOptions.key("url")
-                    .stringType()
-                    .noDefaultValue()
-                    .withDescription("The JDBC URL of OceanBase server.");
-
-    public static final ConfigOption<String> USERNAME =
-            ConfigOptions.key("username")
-                    .stringType()
-                    .noDefaultValue()
-                    .withDescription("The username to connect to OceanBase.");
-
-    public static final ConfigOption<String> PASSWORD =
-            ConfigOptions.key("password")
-                    .stringType()
-                    .noDefaultValue()
-                    .withDescription("The password to connect to OceanBase.");
-
-    public static final ConfigOption<String> SCHEMA_NAME =
-            ConfigOptions.key("schema-name")
-                    .stringType()
-                    .noDefaultValue()
-                    .withDescription("The schema name (database name) of the table.");
-
-    public static final ConfigOption<String> TABLE_NAME =
-            ConfigOptions.key("table-name")
-                    .stringType()
-                    .noDefaultValue()
-                    .withDescription("The table name.");
-
     public static final ConfigOption<String> COMPATIBLE_MODE =
             ConfigOptions.key("compatible-mode")
                     .stringType()
@@ -72,7 +45,7 @@ public class OceanBaseTableSourceFactory implements DynamicTableSourceFactory {
     public static final ConfigOption<Integer> SPLIT_SIZE =
             ConfigOptions.key("split-size")
                     .intType()
-                    .defaultValue(8096)
+                    .defaultValue(8192)
                     .withDescription("The number of rows per split.");
 
     public static final ConfigOption<String> CHUNK_KEY_COLUMN =
@@ -95,43 +68,58 @@ public class OceanBaseTableSourceFactory implements DynamicTableSourceFactory {
     @Override
     public Set<ConfigOption<?>> requiredOptions() {
         Set<ConfigOption<?>> options = new HashSet<>();
-        options.add(URL);
-        options.add(USERNAME);
-        options.add(PASSWORD);
-        options.add(SCHEMA_NAME);
-        options.add(TABLE_NAME);
+        options.add(ConnectorOptions.URL);
+        options.add(ConnectorOptions.USERNAME);
+        options.add(ConnectorOptions.PASSWORD);
+        options.add(ConnectorOptions.SCHEMA_NAME);
+        options.add(ConnectorOptions.TABLE_NAME);
         return options;
     }
 
     @Override
     public Set<ConfigOption<?>> optionalOptions() {
         Set<ConfigOption<?>> options = new HashSet<>();
+        // Source-specific options
         options.add(COMPATIBLE_MODE);
         options.add(SPLIT_SIZE);
         options.add(CHUNK_KEY_COLUMN);
         options.add(FETCH_SIZE);
+        // Tolerate sink-only options since both factories share the "oceanbase" identifier
+        options.add(ConnectorOptions.SYNC_WRITE);
+        options.add(ConnectorOptions.BUFFER_FLUSH_INTERVAL);
+        options.add(ConnectorOptions.BUFFER_SIZE);
+        options.add(ConnectorOptions.MAX_RETRIES);
+        options.add(OceanBaseConnectorOptions.DRIVER_CLASS_NAME);
+        options.add(OceanBaseConnectorOptions.DRUID_PROPERTIES);
+        options.add(OceanBaseConnectorOptions.MEMSTORE_CHECK_ENABLED);
+        options.add(OceanBaseConnectorOptions.MEMSTORE_THRESHOLD);
+        options.add(OceanBaseConnectorOptions.MEMSTORE_CHECK_INTERVAL);
+        options.add(OceanBaseConnectorOptions.PARTITION_ENABLED);
+        options.add(OceanBaseConnectorOptions.TABLE_ORACLE_TENANT_CASE_INSENSITIVE);
         return options;
     }
 
     @Override
     public DynamicTableSource createDynamicTableSource(Context context) {
         FactoryUtil.TableFactoryHelper helper = FactoryUtil.createTableFactoryHelper(this, context);
+        helper.validate();
 
         ReadableConfig config = helper.getOptions();
 
         OceanBaseSourceConfig sourceConfig =
                 new OceanBaseSourceConfig(
-                        config.get(URL),
-                        config.get(USERNAME),
-                        config.get(PASSWORD),
-                        config.get(SCHEMA_NAME),
-                        config.get(TABLE_NAME),
+                        config.get(ConnectorOptions.URL),
+                        config.get(ConnectorOptions.USERNAME),
+                        config.get(ConnectorOptions.PASSWORD),
+                        config.get(ConnectorOptions.SCHEMA_NAME),
+                        config.get(ConnectorOptions.TABLE_NAME),
                         config.get(COMPATIBLE_MODE),
                         config.get(SPLIT_SIZE),
                         config.get(CHUNK_KEY_COLUMN),
                         config.get(FETCH_SIZE));
 
-        DataType producedDataType = context.getCatalogTable().getSchema().toRowDataType();
+        DataType producedDataType =
+                context.getCatalogTable().getResolvedSchema().toPhysicalRowDataType();
 
         return new OceanBaseTableSource(sourceConfig, producedDataType);
     }

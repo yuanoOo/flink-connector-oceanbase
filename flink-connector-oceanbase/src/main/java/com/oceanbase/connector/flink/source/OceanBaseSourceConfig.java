@@ -97,4 +97,12 @@ public class OceanBaseSourceConfig implements Serializable {
     public int getFetchSize() {
         return fetchSize;
     }
+
+    public String quoteIdentifier(String identifier) {
+        if (isOracleMode()) {
+            return "\"" + identifier.replaceAll("\"", "\"\"") + "\"";
+        } else {
+            return "`" + identifier.replaceAll("`", "``") + "`";
+        }
+    }
 }

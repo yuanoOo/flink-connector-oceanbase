@@ -54,7 +54,7 @@ public class OceanBaseSplitEnumerator
     private final Set<Integer> readersAwaitingSplit;
     private volatile long cachedRowCount = -1L;
 
-    private DruidDataSource dataSource;
+    private volatile DruidDataSource dataSource;
 
     public OceanBaseSplitEnumerator(
             SplitEnumeratorContext<OceanBaseSplit> context,
@@ -231,7 +231,6 @@ public class OceanBaseSplitEnumerator
 
         long rowCount = getRowCountCached();
         int numSplits = Math.max(1, (int) Math.ceil((double) rowCount / config.getSplitSize()));
-        numSplits = Math.min(numSplits, Math.max(1, context.currentParallelism()));
 
         if (numSplits <= 1) {
             splits.add(
@@ -426,11 +425,7 @@ public class OceanBaseSplitEnumerator
     }
 
     private String quoteIdentifier(String identifier) {
-        if (config.isOracleMode()) {
-            return "\"" + identifier + "\"";
-        } else {
-            return "`" + identifier + "`";
-        }
+        return config.quoteIdentifier(identifier);
     }
 
     private void assignPendingSplits() {

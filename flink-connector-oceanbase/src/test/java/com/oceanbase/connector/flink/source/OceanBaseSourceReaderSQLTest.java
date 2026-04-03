@@ -16,158 +16,170 @@
 
 package com.oceanbase.connector.flink.source;
 
+import org.apache.flink.table.api.DataTypes;
+import org.apache.flink.table.types.DataType;
+
 import org.junit.jupiter.api.Test;
 
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.List;
-
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /** Unit tests for OceanBaseSourceReader SQL generation strategy. */
 public class OceanBaseSourceReaderSQLTest {
 
+    private static final DataType PRODUCED_TYPE =
+            DataTypes.ROW(DataTypes.FIELD("f", DataTypes.STRING()));
+
+    private static OceanBaseSourceReader createMySQLReader() {
+        OceanBaseSourceConfig config =
+                new OceanBaseSourceConfig(
+                        "jdbc:oceanbase://127.0.0.1:2881/test",
+                        "user",
+                        "pwd",
+                        "test_db",
+                        "products",
+                        "MySQL",
+                        8192,
+                        "id",
+                        1024);
+        return new OceanBaseSourceReader(null, config, PRODUCED_TYPE);
+    }
+
+    private static OceanBaseSourceReader createOracleReader() {
+        OceanBaseSourceConfig config =
+                new OceanBaseSourceConfig(
+                        "jdbc:oceanbase://127.0.0.1:2881/test",
+                        "user",
+                        "pwd",
+                        "TEST_SCHEMA",
+                        "PRODUCTS",
+                        "Oracle",
+                        8192,
+                        "ROWID",
+                        1024);
+        return new OceanBaseSourceReader(null, config, PRODUCED_TYPE);
+    }
+
     @Test
     public void testMySQLQueryNoBoundary() {
+        OceanBaseSourceReader reader = createMySQLReader();
         OceanBaseSplit split = new OceanBaseSplit("0", "test_db", "products", "id", null, null);
-        QueryPlan plan = buildQuery(split, true);
-        assertEquals("SELECT * FROM `test_db`.`products`", plan.sql);
-        assertEquals(0, plan.params.size());
+        assertEquals("SELECT * FROM `test_db`.`products`", reader.buildQueryForTest(split));
+        assertEquals(0, reader.buildQueryParamsForTest(split).length);
     }
 
     @Test
     public void testMySQLQueryFirstSplit() {
+        OceanBaseSourceReader reader = createMySQLReader();
         OceanBaseSplit split = new OceanBaseSplit("0", "test_db", "products", "id", null, 50);
-        QueryPlan plan = buildQuery(split, true);
-        assertEquals("SELECT * FROM `test_db`.`products` WHERE `id` < ?", plan.sql);
-        assertEquals(Arrays.asList("50"), plan.params);
+        assertEquals(
+                "SELECT * FROM `test_db`.`products` WHERE `id` < ?",
+                reader.buildQueryForTest(split));
+        assertArrayEquals(new String[] {"50"}, reader.buildQueryParamsForTest(split));
     }
 
     @Test
     public void testMySQLQueryLastSplit() {
+        OceanBaseSourceReader reader = createMySQLReader();
         OceanBaseSplit split = new OceanBaseSplit("2", "test_db", "products", "id", 100, null);
-        QueryPlan plan = buildQuery(split, true);
-        assertEquals("SELECT * FROM `test_db`.`products` WHERE `id` >= ?", plan.sql);
-        assertEquals(Arrays.asList("100"), plan.params);
+        assertEquals(
+                "SELECT * FROM `test_db`.`products` WHERE `id` >= ?",
+                reader.buildQueryForTest(split));
+        assertArrayEquals(new String[] {"100"}, reader.buildQueryParamsForTest(split));
     }
 
     @Test
     public void testMySQLQueryMiddleSplit() {
+        OceanBaseSourceReader reader = createMySQLReader();
         OceanBaseSplit split = new OceanBaseSplit("1", "test_db", "products", "id", 50, 100);
-        QueryPlan plan = buildQuery(split, true);
-        assertEquals("SELECT * FROM `test_db`.`products` WHERE `id` >= ? AND `id` < ?", plan.sql);
-        assertEquals(Arrays.asList("50", "100"), plan.params);
+        assertEquals(
+                "SELECT * FROM `test_db`.`products` WHERE `id` >= ? AND `id` < ?",
+                reader.buildQueryForTest(split));
+        assertArrayEquals(new String[] {"50", "100"}, reader.buildQueryParamsForTest(split));
+    }
+
+    @Test
+    public void testMySQLQueryNullSplitColumn() {
+        OceanBaseSourceReader reader = createMySQLReader();
+        OceanBaseSplit split = new OceanBaseSplit("0", "test_db", "products", null, null, null);
+        assertEquals("SELECT * FROM `test_db`.`products`", reader.buildQueryForTest(split));
+        assertEquals(0, reader.buildQueryParamsForTest(split).length);
     }
 
     @Test
     public void testOracleQueryNoBoundary() {
+        OceanBaseSourceReader reader = createOracleReader();
         OceanBaseSplit split =
                 new OceanBaseSplit("0", "TEST_SCHEMA", "PRODUCTS", "ROWID", null, null);
-        QueryPlan plan = buildQuery(split, false);
-        assertEquals("SELECT * FROM \"TEST_SCHEMA\".\"PRODUCTS\"", plan.sql);
-        assertEquals(0, plan.params.size());
+        assertEquals("SELECT * FROM \"TEST_SCHEMA\".\"PRODUCTS\"", reader.buildQueryForTest(split));
+        assertEquals(0, reader.buildQueryParamsForTest(split).length);
     }
 
     @Test
     public void testOracleQueryFirstSplit() {
+        OceanBaseSourceReader reader = createOracleReader();
         String end = "AAASdqAAEAAAAInAAA";
         OceanBaseSplit split =
                 new OceanBaseSplit("0", "TEST_SCHEMA", "PRODUCTS", "ROWID", null, end);
-        QueryPlan plan = buildQuery(split, false);
-        assertEquals("SELECT * FROM \"TEST_SCHEMA\".\"PRODUCTS\" WHERE \"ROWID\" < ?", plan.sql);
-        assertEquals(Arrays.asList(end), plan.params);
+        assertEquals(
+                "SELECT * FROM \"TEST_SCHEMA\".\"PRODUCTS\" WHERE \"ROWID\" < ?",
+                reader.buildQueryForTest(split));
+        assertArrayEquals(new String[] {end}, reader.buildQueryParamsForTest(split));
     }
 
     @Test
     public void testOracleQueryLastSplit() {
+        OceanBaseSourceReader reader = createOracleReader();
         String start = "AAASdqAAEAAAAInAAB";
         OceanBaseSplit split =
                 new OceanBaseSplit("2", "TEST_SCHEMA", "PRODUCTS", "ROWID", start, null);
-        QueryPlan plan = buildQuery(split, false);
-        assertEquals("SELECT * FROM \"TEST_SCHEMA\".\"PRODUCTS\" WHERE \"ROWID\" >= ?", plan.sql);
-        assertEquals(Arrays.asList(start), plan.params);
+        assertEquals(
+                "SELECT * FROM \"TEST_SCHEMA\".\"PRODUCTS\" WHERE \"ROWID\" >= ?",
+                reader.buildQueryForTest(split));
+        assertArrayEquals(new String[] {start}, reader.buildQueryParamsForTest(split));
     }
 
     @Test
     public void testOracleQueryMiddleSplit() {
+        OceanBaseSourceReader reader = createOracleReader();
         String start = "AAASdqAAEAAAAInAAA";
         String end = "AAASdqAAEAAAAInAAB";
         OceanBaseSplit split =
                 new OceanBaseSplit("1", "TEST_SCHEMA", "PRODUCTS", "ROWID", start, end);
-        QueryPlan plan = buildQuery(split, false);
         assertEquals(
                 "SELECT * FROM \"TEST_SCHEMA\".\"PRODUCTS\" WHERE \"ROWID\" >= ? AND \"ROWID\" < ?",
-                plan.sql);
-        assertEquals(Arrays.asList(start, end), plan.params);
+                reader.buildQueryForTest(split));
+        assertArrayEquals(new String[] {start, end}, reader.buildQueryParamsForTest(split));
     }
 
-    private QueryPlan buildQuery(OceanBaseSplit split, boolean mysqlMode) {
-        List<String> params = new ArrayList<>();
-        StringBuilder sql = new StringBuilder();
-        sql.append("SELECT * FROM ");
-        sql.append(
-                        mysqlMode
-                                ? quoteIdentifierMySQL(split.getSchemaName())
-                                : quoteIdentifierOracle(split.getSchemaName()))
-                .append(".")
-                .append(
-                        mysqlMode
-                                ? quoteIdentifierMySQL(split.getTableName())
-                                : quoteIdentifierOracle(split.getTableName()));
+    @Test
+    public void testQuoteIdentifierEscapesSpecialCharacters() {
+        OceanBaseSourceConfig mysqlConfig =
+                new OceanBaseSourceConfig(
+                        "jdbc:oceanbase://127.0.0.1:2881/test",
+                        "user",
+                        "pwd",
+                        "db",
+                        "t",
+                        "MySQL",
+                        8192,
+                        null,
+                        1024);
+        assertEquals("`col``name`", mysqlConfig.quoteIdentifier("col`name"));
+        assertEquals("`normal`", mysqlConfig.quoteIdentifier("normal"));
 
-        String splitColumn = split.getSplitColumn();
-        if (splitColumn != null) {
-            if (!split.isFirstSplit() || !split.isLastSplit()) {
-                sql.append(" WHERE ");
-                if (split.isFirstSplit()) {
-                    sql.append(
-                                    mysqlMode
-                                            ? quoteIdentifierMySQL(splitColumn)
-                                            : quoteIdentifierOracle(splitColumn))
-                            .append(" < ?");
-                    params.add(String.valueOf(split.getSplitEnd()));
-                } else if (split.isLastSplit()) {
-                    sql.append(
-                                    mysqlMode
-                                            ? quoteIdentifierMySQL(splitColumn)
-                                            : quoteIdentifierOracle(splitColumn))
-                            .append(" >= ?");
-                    params.add(String.valueOf(split.getSplitStart()));
-                } else {
-                    sql.append(
-                                    mysqlMode
-                                            ? quoteIdentifierMySQL(splitColumn)
-                                            : quoteIdentifierOracle(splitColumn))
-                            .append(" >= ? AND ")
-                            .append(
-                                    mysqlMode
-                                            ? quoteIdentifierMySQL(splitColumn)
-                                            : quoteIdentifierOracle(splitColumn))
-                            .append(" < ?");
-                    params.add(String.valueOf(split.getSplitStart()));
-                    params.add(String.valueOf(split.getSplitEnd()));
-                }
-            }
-        }
-
-        return new QueryPlan(sql.toString(), params);
-    }
-
-    private String quoteIdentifierMySQL(String identifier) {
-        return "`" + identifier + "`";
-    }
-
-    private String quoteIdentifierOracle(String identifier) {
-        return "\"" + identifier + "\"";
-    }
-
-    private static class QueryPlan {
-        private final String sql;
-        private final List<String> params;
-
-        private QueryPlan(String sql, List<String> params) {
-            this.sql = sql;
-            this.params = params;
-        }
+        OceanBaseSourceConfig oracleConfig =
+                new OceanBaseSourceConfig(
+                        "jdbc:oceanbase://127.0.0.1:2881/test",
+                        "user",
+                        "pwd",
+                        "db",
+                        "t",
+                        "Oracle",
+                        8192,
+                        null,
+                        1024);
+        assertEquals("\"col\"\"name\"", oracleConfig.quoteIdentifier("col\"name"));
+        assertEquals("\"normal\"", oracleConfig.quoteIdentifier("normal"));
     }
 }
