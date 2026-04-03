@@ -23,12 +23,14 @@ import java.io.ByteArrayOutputStream;
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
+import java.io.ObjectInputStream;
+import java.io.ObjectOutputStream;
 import java.nio.charset.StandardCharsets;
 
 /** Serializer for {@link OceanBaseSplit}. */
 public class OceanBaseSplitSerializer implements SimpleVersionedSerializer<OceanBaseSplit> {
 
-    private static final int CURRENT_VERSION = 1;
+    private static final int CURRENT_VERSION = 2;
 
     @Override
     public int getVersion() {
@@ -91,47 +93,31 @@ public class OceanBaseSplitSerializer implements SimpleVersionedSerializer<Ocean
 
     private void writeObject(DataOutputStream out, Object value) throws IOException {
         if (value == null) {
-            out.writeByte(0);
-        } else if (value instanceof String) {
-            out.writeByte(1);
-            writeString(out, (String) value);
-        } else if (value instanceof Long) {
-            out.writeByte(2);
-            out.writeLong((Long) value);
-        } else if (value instanceof Integer) {
-            out.writeByte(3);
-            out.writeInt((Integer) value);
-        } else if (value instanceof Double) {
-            out.writeByte(4);
-            out.writeDouble((Double) value);
-        } else if (value instanceof java.math.BigDecimal) {
-            out.writeByte(5);
-            writeString(out, value.toString());
-        } else {
-            out.writeByte(6);
-            writeString(out, value.toString());
+            out.writeBoolean(false);
+            return;
         }
+
+        out.writeBoolean(true);
+        ByteArrayOutputStream bytesStream = new ByteArrayOutputStream();
+        try (ObjectOutputStream oos = new ObjectOutputStream(bytesStream)) {
+            oos.writeObject(value);
+        }
+        byte[] bytes = bytesStream.toByteArray();
+        out.writeInt(bytes.length);
+        out.write(bytes);
     }
 
     private Object readObject(DataInputStream in) throws IOException {
-        byte type = in.readByte();
-        switch (type) {
-            case 0:
-                return null;
-            case 1:
-                return readString(in);
-            case 2:
-                return in.readLong();
-            case 3:
-                return in.readInt();
-            case 4:
-                return in.readDouble();
-            case 5:
-                return new java.math.BigDecimal(readString(in));
-            case 6:
-                return readString(in);
-            default:
-                throw new IOException("Unknown object type: " + type);
+        if (!in.readBoolean()) {
+            return null;
+        }
+        int length = in.readInt();
+        byte[] bytes = new byte[length];
+        in.readFully(bytes);
+        try (ObjectInputStream ois = new ObjectInputStream(new ByteArrayInputStream(bytes))) {
+            return ois.readObject();
+        } catch (ClassNotFoundException e) {
+            throw new IOException("Failed to deserialize split boundary value", e);
         }
     }
 }

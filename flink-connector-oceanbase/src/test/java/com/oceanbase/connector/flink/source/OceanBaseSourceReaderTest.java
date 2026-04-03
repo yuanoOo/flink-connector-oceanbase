@@ -17,17 +17,23 @@
 package com.oceanbase.connector.flink.source;
 
 import org.apache.flink.table.types.logical.BigIntType;
+import org.apache.flink.table.types.logical.DateType;
 import org.apache.flink.table.types.logical.DecimalType;
 import org.apache.flink.table.types.logical.DoubleType;
 import org.apache.flink.table.types.logical.FloatType;
 import org.apache.flink.table.types.logical.IntType;
 import org.apache.flink.table.types.logical.LogicalType;
 import org.apache.flink.table.types.logical.SmallIntType;
+import org.apache.flink.table.types.logical.TimeType;
+import org.apache.flink.table.types.logical.TimestampType;
 import org.apache.flink.table.types.logical.TinyIntType;
 
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
+import java.sql.Date;
+import java.sql.Time;
+import java.sql.Timestamp;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -93,6 +99,32 @@ public class OceanBaseSourceReaderTest {
     }
 
     @Test
+    public void testDateConversionFromSqlDate() {
+        LogicalType type = new DateType();
+        long epochDay = System.currentTimeMillis() / (24L * 60L * 60L * 1000L);
+        Date date = new Date(epochDay * 24L * 60L * 60L * 1000L);
+        Object result = convertValue(date, type);
+        assertTrue(result instanceof Long);
+        assertEquals(date.toLocalDate().toEpochDay(), result);
+    }
+
+    @Test
+    public void testTimeConversionFromSqlTime() {
+        LogicalType type = new TimeType();
+        Time time = Time.valueOf("12:34:56");
+        Object result = convertValue(time, type);
+        assertEquals(45296000L, result);
+    }
+
+    @Test
+    public void testTimestampConversionFromString() {
+        LogicalType type = new TimestampType();
+        String value = "2025-01-01 10:00:00.0";
+        Object result = convertValue(value, type);
+        assertTrue(result != null);
+    }
+
+    @Test
     public void testNullValueConversion() {
         LogicalType type = new IntType();
         Object result = convertValue(null, type);
@@ -152,6 +184,36 @@ public class OceanBaseSourceReaderTest {
             case CHAR:
                 return org.apache.flink.table.data.StringData.fromString(value.toString());
             case BOOLEAN:
+                return value;
+            case DATE:
+                if (value instanceof Date) {
+                    return ((Date) value).toLocalDate().toEpochDay();
+                }
+                if (value instanceof java.time.LocalDate) {
+                    return ((java.time.LocalDate) value).toEpochDay();
+                }
+                return value;
+            case TIME_WITHOUT_TIME_ZONE:
+                if (value instanceof Time) {
+                    return ((Time) value).toLocalTime().toSecondOfDay() * 1000L;
+                }
+                if (value instanceof java.time.LocalTime) {
+                    return ((java.time.LocalTime) value).toSecondOfDay() * 1000L;
+                }
+                return value;
+            case TIMESTAMP_WITHOUT_TIME_ZONE:
+                if (value instanceof Timestamp) {
+                    return org.apache.flink.table.data.TimestampData.fromTimestamp(
+                            (Timestamp) value);
+                }
+                if (value instanceof java.time.LocalDateTime) {
+                    return org.apache.flink.table.data.TimestampData.fromLocalDateTime(
+                            (java.time.LocalDateTime) value);
+                }
+                if (value instanceof String) {
+                    return org.apache.flink.table.data.TimestampData.fromTimestamp(
+                            Timestamp.valueOf((String) value));
+                }
                 return value;
             default:
                 return value;

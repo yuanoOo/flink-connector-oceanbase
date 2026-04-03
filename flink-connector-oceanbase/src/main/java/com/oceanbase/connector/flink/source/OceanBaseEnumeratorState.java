@@ -25,22 +25,24 @@ public class OceanBaseEnumeratorState implements Serializable {
 
     private static final long serialVersionUID = 1L;
 
-    private final List<OceanBaseSplit> assignedSplits;
+    // Splits that were assigned to readers when checkpoint was taken and may still be in flight.
+    private final List<OceanBaseSplit> inFlightSplits;
+    // Splits that have not been assigned yet.
     private final List<OceanBaseSplit> pendingSplits;
 
     public OceanBaseEnumeratorState() {
-        this.assignedSplits = new ArrayList<>();
+        this.inFlightSplits = new ArrayList<>();
         this.pendingSplits = new ArrayList<>();
     }
 
     public OceanBaseEnumeratorState(
-            List<OceanBaseSplit> assignedSplits, List<OceanBaseSplit> pendingSplits) {
-        this.assignedSplits = assignedSplits;
+            List<OceanBaseSplit> inFlightSplits, List<OceanBaseSplit> pendingSplits) {
+        this.inFlightSplits = inFlightSplits;
         this.pendingSplits = pendingSplits;
     }
 
-    public List<OceanBaseSplit> getAssignedSplits() {
-        return assignedSplits;
+    public List<OceanBaseSplit> getInFlightSplits() {
+        return inFlightSplits;
     }
 
     public List<OceanBaseSplit> getPendingSplits() {

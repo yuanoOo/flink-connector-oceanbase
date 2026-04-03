@@ -26,13 +26,16 @@ import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -46,9 +49,10 @@ public class OceanBaseSplitEnumerator
 
     private final SplitEnumeratorContext<OceanBaseSplit> context;
     private final OceanBaseSourceConfig config;
-    private final List<OceanBaseSplit> pendingSplits;
+    private final ArrayDeque<OceanBaseSplit> pendingSplits;
+    private final Map<Integer, OceanBaseSplit> inFlightSplits;
     private final Set<Integer> readersAwaitingSplit;
-    private final Set<Integer> assignedReaders;
+    private volatile long cachedRowCount = -1L;
 
     private DruidDataSource dataSource;
 
@@ -58,17 +62,14 @@ public class OceanBaseSplitEnumerator
             OceanBaseEnumeratorState restoredState) {
         this.context = context;
         this.config = config;
-        this.pendingSplits = new ArrayList<>();
+        this.pendingSplits = new ArrayDeque<>();
+        this.inFlightSplits = new ConcurrentHashMap<>();
         this.readersAwaitingSplit = ConcurrentHashMap.newKeySet();
-        this.assignedReaders = ConcurrentHashMap.newKeySet();
 
         if (restoredState != null) {
             this.pendingSplits.addAll(restoredState.getPendingSplits());
-            // Mark already assigned readers
-            for (OceanBaseSplit split : restoredState.getAssignedSplits()) {
-                // These splits were assigned before, we need to reassign them
-                this.pendingSplits.add(split);
-            }
+            this.pendingSplits.addAll(restoredState.getInFlightSplits());
+            dedupePendingSplits();
         }
     }
 
@@ -80,18 +81,24 @@ public class OceanBaseSplitEnumerator
             discoverSplits();
         }
 
-        // Assign splits to readers that are already registered
         assignPendingSplits();
     }
 
     @Override
     public void handleSplitRequest(int subtaskId, String requesterHostname) {
         LOG.debug("Received split request from subtask {}", subtaskId);
+        OceanBaseSplit finishedSplit = inFlightSplits.remove(subtaskId);
+        if (finishedSplit != null) {
+            LOG.debug(
+                    "Reader {} requested new split and finished {}",
+                    subtaskId,
+                    finishedSplit.splitId());
+        }
 
         if (!pendingSplits.isEmpty()) {
             assignSplitToReader(subtaskId);
         } else {
-            // No more splits, signal to the reader
+            readersAwaitingSplit.remove(subtaskId);
             context.signalNoMoreSplits(subtaskId);
         }
     }
@@ -99,8 +106,11 @@ public class OceanBaseSplitEnumerator
     @Override
     public void addSplitsBack(List<OceanBaseSplit> splits, int subtaskId) {
         LOG.debug("Received {} splits back from subtask {}", splits.size(), subtaskId);
-        pendingSplits.addAll(splits);
-        assignedReaders.remove(subtaskId);
+        inFlightSplits.remove(subtaskId);
+        for (OceanBaseSplit split : splits) {
+            pendingSplits.addLast(split);
+        }
+        dedupePendingSplits();
         assignPendingSplits();
     }
 
@@ -108,20 +118,20 @@ public class OceanBaseSplitEnumerator
     public void addReader(int subtaskId) {
         LOG.debug("Reader {} registered", subtaskId);
         readersAwaitingSplit.add(subtaskId);
+        inFlightSplits.remove(subtaskId);
 
-        // Try to assign splits immediately if available
         if (!pendingSplits.isEmpty()) {
             assignSplitToReader(subtaskId);
+        } else if (pendingSplits.isEmpty() && inFlightSplits.isEmpty()) {
+            readersAwaitingSplit.remove(subtaskId);
+            context.signalNoMoreSplits(subtaskId);
         }
     }
 
     @Override
     public OceanBaseEnumeratorState snapshotState(long checkpointId) throws Exception {
-        List<OceanBaseSplit> assignedSplits = new ArrayList<>();
-        for (int reader : assignedReaders) {
-            // We don't track which split is assigned to which reader in this simple impl
-        }
-        return new OceanBaseEnumeratorState(assignedSplits, new ArrayList<>(pendingSplits));
+        return new OceanBaseEnumeratorState(
+                new ArrayList<>(inFlightSplits.values()), new ArrayList<>(pendingSplits));
     }
 
     @Override
@@ -139,10 +149,13 @@ public class OceanBaseSplitEnumerator
             }
 
             List<OceanBaseSplit> splits = calculateSplits(splitColumn);
-            pendingSplits.addAll(splits);
+            for (OceanBaseSplit split : splits) {
+                pendingSplits.addLast(split);
+            }
+            dedupePendingSplits();
             LOG.info(
                     "Discovered {} splits for table {}.{}",
-                    splits.size(),
+                    pendingSplits.size(),
                     config.getSchemaName(),
                     config.getTableName());
 
@@ -165,7 +178,7 @@ public class OceanBaseSplitEnumerator
         if (config.isOracleMode()) {
             sql =
                     "SELECT cols.column_name FROM all_constraints cons "
-                            + "JOIN all_cons_columns cols ON cons.constraint_name = cols.constraint_name "
+                            + "JOIN all_cons_columns cols ON cons.owner = cols.owner AND cons.constraint_name = cols.constraint_name "
                             + "WHERE cons.owner = ? AND cons.table_name = ? AND cons.constraint_type = 'P'";
         } else {
             sql =
@@ -198,17 +211,14 @@ public class OceanBaseSplitEnumerator
         List<OceanBaseSplit> splits = new ArrayList<>();
 
         if (splitColumn == null) {
-            // No split column, single split
             splits.add(
                     new OceanBaseSplit(
                             "0", config.getSchemaName(), config.getTableName(), null, null, null));
             return splits;
         }
 
-        // Get min and max values of split column
         Object[] minMax = getMinMax(splitColumn);
         if (minMax == null) {
-            // Empty table
             return splits;
         }
 
@@ -216,14 +226,12 @@ public class OceanBaseSplitEnumerator
         Object max = minMax[1];
 
         if (min == null || max == null) {
-            // No data, return empty
             return splits;
         }
 
-        // Calculate split points based on split size
-        long rowCount = getRowCount();
-        int numSplits = Math.max(1, (int) (rowCount / config.getSplitSize()));
-        numSplits = Math.min(numSplits, context.currentParallelism());
+        long rowCount = getRowCountCached();
+        int numSplits = Math.max(1, (int) Math.ceil((double) rowCount / config.getSplitSize()));
+        numSplits = Math.min(numSplits, Math.max(1, context.currentParallelism()));
 
         if (numSplits <= 1) {
             splits.add(
@@ -237,8 +245,7 @@ public class OceanBaseSplitEnumerator
             return splits;
         }
 
-        // Generate splits
-        List<Object> splitPoints = generateSplitPoints(min, max, numSplits);
+        List<Object> splitPoints = generateSplitPoints(splitColumn, min, max, numSplits);
 
         for (int i = 0; i < splitPoints.size() - 1; i++) {
             splits.add(
@@ -289,9 +296,24 @@ public class OceanBaseSplitEnumerator
         return 0;
     }
 
-    private List<Object> generateSplitPoints(Object min, Object max, int numSplits) {
+    private long getRowCountCached() {
+        if (cachedRowCount >= 0L) {
+            return cachedRowCount;
+        }
+
+        try {
+            cachedRowCount = getRowCount();
+            return cachedRowCount;
+        } catch (SQLException e) {
+            LOG.warn("Failed to get row count for split generation, fallback to 0", e);
+            return 0L;
+        }
+    }
+
+    private List<Object> generateSplitPoints(
+            String splitColumn, Object min, Object max, int numSplits) {
         List<Object> points = new ArrayList<>();
-        points.add(null); // First split starts from null (inclusive from beginning)
+        points.add(null);
 
         if (min instanceof Number && max instanceof Number) {
             double minVal = ((Number) min).doubleValue();
@@ -304,25 +326,98 @@ public class OceanBaseSplitEnumerator
         } else if (min instanceof BigDecimal && max instanceof BigDecimal) {
             BigDecimal minVal = (BigDecimal) min;
             BigDecimal maxVal = (BigDecimal) max;
-            BigDecimal step = maxVal.subtract(minVal).divide(new BigDecimal(numSplits));
+            BigDecimal step =
+                    maxVal.subtract(minVal)
+                            .divide(new BigDecimal(numSplits), 16, RoundingMode.HALF_UP);
 
             for (int i = 1; i < numSplits; i++) {
                 points.add(minVal.add(step.multiply(new BigDecimal(i))));
             }
         } else {
-            // For string types (including ROWID), use string range
-            String minStr = min.toString();
-            String maxStr = max.toString();
-
-            // For strings, we can't easily split, so just create range-based splits
-            // This is a simplified approach
+            long rowCount = getRowCountCached();
             for (int i = 1; i < numSplits; i++) {
-                points.add(minStr);
+                long offset = Math.max(0L, Math.round((double) rowCount * i / numSplits));
+                if (offset <= 0 || offset >= rowCount) {
+                    continue;
+                }
+                Object point = querySplitPointByOffset(splitColumn, offset);
+                if (point != null) {
+                    points.add(point);
+                }
             }
         }
 
-        points.add(null); // Last split ends at null (inclusive to end)
-        return points;
+        points.add(null);
+        return dedupeAndTrimSplitPoints(points);
+    }
+
+    private Object querySplitPointByOffset(String splitColumn, long offset) {
+        String quotedSplitColumn = quoteIdentifier(splitColumn);
+        String quotedTable =
+                quoteIdentifier(config.getSchemaName())
+                        + "."
+                        + quoteIdentifier(config.getTableName());
+
+        String sql;
+        if (config.isOracleMode()) {
+            sql =
+                    "SELECT val FROM (SELECT val, ROWNUM rn FROM (SELECT "
+                            + quotedSplitColumn
+                            + " AS val FROM "
+                            + quotedTable
+                            + " ORDER BY "
+                            + quotedSplitColumn
+                            + ") WHERE ROWNUM <= ?) WHERE rn = ?";
+        } else {
+            sql =
+                    "SELECT "
+                            + quotedSplitColumn
+                            + " FROM "
+                            + quotedTable
+                            + " ORDER BY "
+                            + quotedSplitColumn
+                            + " LIMIT 1 OFFSET ?";
+        }
+
+        try (Connection conn = getDataSource().getConnection();
+                PreparedStatement stmt = conn.prepareStatement(sql)) {
+            long rowNumber = offset + 1;
+            if (config.isOracleMode()) {
+                stmt.setLong(1, rowNumber);
+                stmt.setLong(2, rowNumber);
+            } else {
+                stmt.setLong(1, offset);
+            }
+
+            try (ResultSet rs = stmt.executeQuery()) {
+                if (rs.next()) {
+                    return rs.getObject(1);
+                }
+            }
+        } catch (SQLException e) {
+            LOG.warn("Failed to query split boundary at offset {}", offset, e);
+        }
+        return null;
+    }
+
+    private List<Object> dedupeAndTrimSplitPoints(List<Object> points) {
+        LinkedHashSet<Object> deduped = new LinkedHashSet<>();
+        for (Object point : points) {
+            deduped.add(point);
+        }
+        List<Object> sorted = new ArrayList<>(deduped);
+        if (sorted.isEmpty()) {
+            sorted.add(null);
+            sorted.add(null);
+            return sorted;
+        }
+        if (sorted.get(0) != null) {
+            sorted.add(0, null);
+        }
+        if (sorted.get(sorted.size() - 1) != null) {
+            sorted.add(null);
+        }
+        return sorted;
     }
 
     private String quoteIdentifier(String identifier) {
@@ -335,27 +430,55 @@ public class OceanBaseSplitEnumerator
 
     private void assignPendingSplits() {
         for (int reader : readersAwaitingSplit) {
-            if (!pendingSplits.isEmpty() && !assignedReaders.contains(reader)) {
+            if (!pendingSplits.isEmpty() && !inFlightSplits.containsKey(reader)) {
                 assignSplitToReader(reader);
             }
         }
     }
 
     private void assignSplitToReader(int subtaskId) {
+        if (inFlightSplits.containsKey(subtaskId)) {
+            return;
+        }
+
         if (pendingSplits.isEmpty()) {
+            readersAwaitingSplit.remove(subtaskId);
             context.signalNoMoreSplits(subtaskId);
             return;
         }
 
-        OceanBaseSplit split = pendingSplits.remove(0);
+        OceanBaseSplit split = pendingSplits.pollFirst();
+        inFlightSplits.put(subtaskId, split);
         Map<Integer, List<OceanBaseSplit>> assignment = new HashMap<>();
         assignment.put(subtaskId, Collections.singletonList(split));
-
-        assignedReaders.add(subtaskId);
         readersAwaitingSplit.remove(subtaskId);
 
         context.assignSplits(new SplitsAssignment<>(assignment));
         LOG.debug("Assigned split {} to subtask {}", split.splitId(), subtaskId);
+    }
+
+    private void dedupePendingSplits() {
+        LinkedHashSet<String> seen = new LinkedHashSet<>();
+        ArrayDeque<OceanBaseSplit> deduped = new ArrayDeque<>();
+        for (OceanBaseSplit split : pendingSplits) {
+            String key =
+                    split.getSchemaName()
+                            + "."
+                            + split.getTableName()
+                            + "#"
+                            + split.getSplitColumn()
+                            + "#"
+                            + split.splitId()
+                            + "#"
+                            + split.getSplitStart()
+                            + "#"
+                            + split.getSplitEnd();
+            if (seen.add(key)) {
+                deduped.add(split);
+            }
+        }
+        pendingSplits.clear();
+        pendingSplits.addAll(deduped);
     }
 
     private DruidDataSource getDataSource() {

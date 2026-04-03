@@ -34,13 +34,16 @@ import com.alibaba.druid.pool.DruidDataSource;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.io.UnsupportedEncodingException;
 import java.math.BigDecimal;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Timestamp;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.LocalTime;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
@@ -54,9 +57,9 @@ public class OceanBaseSourceReader implements SourceReader<RowData, OceanBaseSpl
 
     private final SourceReaderContext context;
     private final OceanBaseSourceConfig config;
-    private final DataType producedDataType;
     private final LogicalType[] fieldTypes;
-    private final Deque<OceanBaseSplit> splits = new ArrayDeque<>();
+    private final Deque<OceanBaseSplit> pendingSplits = new ArrayDeque<>();
+    private OceanBaseSplit currentSplit;
     private DruidDataSource dataSource;
     private volatile boolean running = true;
     private volatile CompletableFuture<Void> availabilityFuture = new CompletableFuture<>();
@@ -65,9 +68,7 @@ public class OceanBaseSourceReader implements SourceReader<RowData, OceanBaseSpl
             SourceReaderContext context, OceanBaseSourceConfig config, DataType producedDataType) {
         this.context = context;
         this.config = config;
-        this.producedDataType = producedDataType;
 
-        // Extract field types from producedDataType
         List<DataType> children = producedDataType.getChildren();
         this.fieldTypes = new LogicalType[children.size()];
         for (int i = 0; i < children.size(); i++) {
@@ -78,20 +79,28 @@ public class OceanBaseSourceReader implements SourceReader<RowData, OceanBaseSpl
     @Override
     public void start() {
         LOG.info("Starting OceanBase source reader");
+        requestSplit();
     }
 
     @Override
     public void addSplits(List<OceanBaseSplit> splits) {
-        this.splits.addAll(splits);
-        // Signal availability when new splits are added
-        if (!this.splits.isEmpty()) {
-            availabilityFuture.complete(null);
+        synchronized (pendingSplits) {
+            pendingSplits.addAll(splits);
         }
+        availabilityFuture.complete(null);
+        requestSplit();
     }
 
     @Override
     public List<OceanBaseSplit> snapshotState(long checkpointId) {
-        return new ArrayList<>(splits);
+        List<OceanBaseSplit> state = new ArrayList<>();
+        synchronized (pendingSplits) {
+            if (currentSplit != null) {
+                state.add(currentSplit);
+            }
+            state.addAll(pendingSplits);
+        }
+        return state;
     }
 
     @Override
@@ -109,46 +118,69 @@ public class OceanBaseSourceReader implements SourceReader<RowData, OceanBaseSpl
 
     @Override
     public CompletableFuture<Void> isAvailable() {
-        if (!splits.isEmpty()) {
-            return CompletableFuture.completedFuture(null);
+        synchronized (pendingSplits) {
+            if (currentSplit != null || !pendingSplits.isEmpty()) {
+                return CompletableFuture.completedFuture(null);
+            }
+            if (availabilityFuture.isDone()) {
+                availabilityFuture = new CompletableFuture<>();
+            }
+            return availabilityFuture;
         }
-        return availabilityFuture;
     }
 
     @Override
     public InputStatus pollNext(ReaderOutput<RowData> output) throws Exception {
-        if (splits.isEmpty()) {
+        if (!running) {
             return InputStatus.NOTHING_AVAILABLE;
         }
 
-        OceanBaseSplit split = splits.poll();
-        if (split == null) {
+        if (currentSplit == null) {
+            synchronized (pendingSplits) {
+                currentSplit = pendingSplits.pollFirst();
+            }
+        }
+
+        if (currentSplit == null) {
             return InputStatus.NOTHING_AVAILABLE;
         }
 
         try {
-            readSplit(split, output);
+            readSplit(currentSplit, output);
+            currentSplit = null;
+            requestSplit();
         } catch (SQLException e) {
-            LOG.error("Error reading split: {}", split, e);
-            throw new RuntimeException("Failed to read split: " + split.splitId(), e);
+            LOG.error("Error reading split: {}", currentSplit, e);
+            throw new RuntimeException("Failed to read split: " + currentSplit.splitId(), e);
         }
 
-        // Check if there are more splits to process
-        if (splits.isEmpty()) {
-            return InputStatus.NOTHING_AVAILABLE;
+        synchronized (pendingSplits) {
+            return pendingSplits.isEmpty()
+                    ? InputStatus.NOTHING_AVAILABLE
+                    : InputStatus.MORE_AVAILABLE;
         }
-        return InputStatus.MORE_AVAILABLE;
+    }
+
+    private void requestSplit() {
+        try {
+            context.sendSplitRequest();
+        } catch (Exception e) {
+            LOG.debug("Failed to request more splits", e);
+        }
     }
 
     private void readSplit(OceanBaseSplit split, ReaderOutput<RowData> output) throws SQLException {
-        String sql = buildQuerySQL(split);
+        List<Object> params = new ArrayList<>();
+        String sql = buildQuerySQL(split, params);
         LOG.info("Executing query for split {}: {}", split.splitId(), sql);
 
         try (Connection conn = getDataSource().getConnection();
                 PreparedStatement stmt =
                         conn.prepareStatement(
                                 sql, ResultSet.TYPE_FORWARD_ONLY, ResultSet.CONCUR_READ_ONLY)) {
-
+            for (int i = 0; i < params.size(); i++) {
+                stmt.setObject(i + 1, params.get(i));
+            }
             stmt.setFetchSize(config.getFetchSize());
 
             try (ResultSet rs = stmt.executeQuery()) {
@@ -180,6 +212,9 @@ public class OceanBaseSourceReader implements SourceReader<RowData, OceanBaseSpl
             case CHAR:
                 return StringData.fromString(value.toString());
             case BOOLEAN:
+                if (value instanceof Number) {
+                    return ((Number) value).intValue() != 0;
+                }
                 return value;
             case TINYINT:
                 return ((Number) value).byteValue();
@@ -194,26 +229,62 @@ public class OceanBaseSourceReader implements SourceReader<RowData, OceanBaseSpl
                 return ((Number) value).doubleValue();
             case DECIMAL:
                 DecimalType decimalType = (DecimalType) type;
-                return DecimalData.fromBigDecimal(
-                        (BigDecimal) value, decimalType.getPrecision(), decimalType.getScale());
-            case DATE:
-            case TIME_WITHOUT_TIME_ZONE:
-            case TIMESTAMP_WITHOUT_TIME_ZONE:
-                if (value instanceof Timestamp) {
-                    return TimestampData.fromTimestamp((Timestamp) value);
-                } else if (value instanceof LocalDateTime) {
-                    return TimestampData.fromLocalDateTime((LocalDateTime) value);
+                if (value instanceof BigDecimal) {
+                    return DecimalData.fromBigDecimal(
+                            (BigDecimal) value, decimalType.getPrecision(), decimalType.getScale());
                 }
-                return TimestampData.fromTimestamp(Timestamp.valueOf(value.toString()));
+                return DecimalData.fromBigDecimal(
+                        new BigDecimal(value.toString()),
+                        decimalType.getPrecision(),
+                        decimalType.getScale());
+            case DATE:
+                {
+                    if (value instanceof java.sql.Date) {
+                        return ((java.sql.Date) value).toLocalDate().toEpochDay();
+                    }
+                    if (value instanceof LocalDate) {
+                        return ((LocalDate) value).toEpochDay();
+                    }
+                    if (value instanceof String) {
+                        return LocalDate.parse((String) value).toEpochDay();
+                    }
+                    return value;
+                }
+            case TIME_WITHOUT_TIME_ZONE:
+                if (value instanceof java.sql.Time) {
+                    return ((java.sql.Time) value).toLocalTime().toSecondOfDay() * 1000;
+                }
+                if (value instanceof LocalTime) {
+                    return ((LocalTime) value).toSecondOfDay() * 1000;
+                }
+                return value;
+            case TIMESTAMP_WITHOUT_TIME_ZONE:
             case TIMESTAMP_WITH_LOCAL_TIME_ZONE:
                 if (value instanceof Timestamp) {
                     return TimestampData.fromTimestamp((Timestamp) value);
                 }
-                return TimestampData.fromTimestamp(Timestamp.valueOf(value.toString()));
+                if (value instanceof LocalDateTime) {
+                    return TimestampData.fromLocalDateTime((LocalDateTime) value);
+                }
+                if (value instanceof String) {
+                    try {
+                        return TimestampData.fromTimestamp(Timestamp.valueOf((String) value));
+                    } catch (IllegalArgumentException ignored) {
+                        return value;
+                    }
+                }
+                return value;
             case BINARY:
             case VARBINARY:
                 if (value instanceof byte[]) {
                     return value;
+                }
+                if (value instanceof String) {
+                    try {
+                        return ((String) value).getBytes("UTF-8");
+                    } catch (UnsupportedEncodingException e) {
+                        return value.toString().getBytes();
+                    }
                 }
                 return value.toString().getBytes();
             default:
@@ -221,49 +292,50 @@ public class OceanBaseSourceReader implements SourceReader<RowData, OceanBaseSpl
         }
     }
 
-    private String buildQuerySQL(OceanBaseSplit split) {
+    String buildQueryForTest(OceanBaseSplit split) {
+        List<Object> params = new ArrayList<>();
+        return buildQuerySQL(split, params);
+    }
+
+    String[] buildQueryParamsForTest(OceanBaseSplit split) {
+        List<Object> params = new ArrayList<>();
+        buildQuerySQL(split, params);
+        String[] values = new String[params.size()];
+        for (int i = 0; i < params.size(); i++) {
+            values[i] = String.valueOf(params.get(i));
+        }
+        return values;
+    }
+
+    private String buildQuerySQL(OceanBaseSplit split, List<Object> params) {
         StringBuilder sql = new StringBuilder();
         sql.append("SELECT * FROM ");
-
-        if (config.isOracleMode()) {
-            sql.append(quoteIdentifier(split.getSchemaName()))
-                    .append(".")
-                    .append(quoteIdentifier(split.getTableName()));
-        } else {
-            sql.append(quoteIdentifier(split.getSchemaName()))
-                    .append(".")
-                    .append(quoteIdentifier(split.getTableName()));
-        }
+        sql.append(quoteIdentifier(split.getSchemaName()))
+                .append(".")
+                .append(quoteIdentifier(split.getTableName()));
 
         String splitColumn = split.getSplitColumn();
         if (splitColumn != null) {
-            sql.append(" WHERE ");
-
             if (split.isFirstSplit() && split.isLastSplit()) {
-                // Single split, no WHERE clause needed
-                sql.delete(sql.length() - 7, sql.length()); // Remove " WHERE "
-            } else if (split.isFirstSplit()) {
-                sql.append(quoteIdentifier(splitColumn))
-                        .append(" < '")
-                        .append(escapeValue(split.getSplitEnd()))
-                        .append("'");
+                return sql.toString();
+            }
+
+            sql.append(" WHERE ");
+            if (split.isFirstSplit()) {
+                sql.append(quoteIdentifier(splitColumn)).append(" < ?");
+                params.add(split.getSplitEnd());
             } else if (split.isLastSplit()) {
-                sql.append(quoteIdentifier(splitColumn))
-                        .append(" >= '")
-                        .append(escapeValue(split.getSplitStart()))
-                        .append("'");
+                sql.append(quoteIdentifier(splitColumn)).append(" >= ?");
+                params.add(split.getSplitStart());
             } else {
                 sql.append(quoteIdentifier(splitColumn))
-                        .append(" >= '")
-                        .append(escapeValue(split.getSplitStart()))
-                        .append("' AND ")
+                        .append(" >= ? AND ")
                         .append(quoteIdentifier(splitColumn))
-                        .append(" < '")
-                        .append(escapeValue(split.getSplitEnd()))
-                        .append("'");
+                        .append(" < ?");
+                params.add(split.getSplitStart());
+                params.add(split.getSplitEnd());
             }
         }
-
         return sql.toString();
     }
 
@@ -273,13 +345,6 @@ public class OceanBaseSourceReader implements SourceReader<RowData, OceanBaseSpl
         } else {
             return "`" + identifier + "`";
         }
-    }
-
-    private String escapeValue(Object value) {
-        if (value == null) {
-            return "";
-        }
-        return value.toString().replace("'", "''");
     }
 
     private DruidDataSource getDataSource() {
