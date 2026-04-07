@@ -2,7 +2,7 @@
 
 [English](flink-connector-oceanbase.md) | 简体中文
 
-本项目是一个 OceanBase 的 Flink Connector，可以在 Flink 中通过 JDBC 驱动将数据写入到 OceanBase。
+本项目是一个 OceanBase 的 Flink Connector，可以在 Flink 中通过 JDBC 驱动从 OceanBase 读取数据或将数据写入到 OceanBase，支持 MySQL 和 Oracle 兼容模式。
 
 ## 开始上手
 
@@ -73,7 +73,80 @@ mvn clean package -DskipTests
 
 ### 示例
 
-#### 准备
+#### Source（读取）
+
+##### 准备
+
+在 OceanBase 数据库 MySQL 模式下的 test 库中创建源表 t_source 并插入一些数据。
+
+```mysql
+USE test;
+CREATE TABLE `t_source`
+(
+  `id`       int(10) NOT NULL,
+  `username` varchar(20) DEFAULT NULL,
+  `score`    int(10)     DEFAULT NULL,
+  PRIMARY KEY (`id`)
+);
+INSERT INTO t_source VALUES (1, 'Tom', 99), (2, 'Jerry', 88), (3, 'Alice', 95);
+```
+
+##### Flink SQL 示例
+
+将需要用到的依赖的 JAR 文件放到 Flink 的 lib 目录下，之后通过 SQL Client 在 Flink 中创建源表。
+
+```sql
+CREATE TABLE t_source
+(
+    id       INT,
+    username VARCHAR,
+    score    INT,
+    PRIMARY KEY (id) NOT ENFORCED
+) WITH (
+    'connector' = 'oceanbase',
+    'url' = 'jdbc:mysql://127.0.0.1:2881/test',
+    'schema-name' = 'test',
+    'table-name' = 't_source',
+    'username' = 'root@test#obcluster',
+    'password' = 'pswd',
+    'compatible-mode' = 'MySQL',
+    'split-size' = '8192',
+    'fetch-size' = '1024'
+);
+```
+
+查询源表数据。
+
+```sql
+SELECT * FROM t_source;
+```
+
+对于 OceanBase 数据库企业版 Oracle 模式的用户，需要指定 OceanBase JDBC 驱动对应的 `url`、`driver-class-name` 和 `compatible-mode`。
+
+```sql
+CREATE TABLE t_source
+(
+    id       INT,
+    username VARCHAR,
+    score    INT,
+    PRIMARY KEY (id) NOT ENFORCED
+) WITH (
+    'connector' = 'oceanbase',
+    'url' = 'jdbc:oceanbase://127.0.0.1:2881/SYS',
+    'driver-class-name' = 'com.oceanbase.jdbc.Driver',
+    'schema-name' = 'SYS',
+    'table-name' = 'T_SOURCE',
+    'compatible-mode' = 'Oracle',
+    'username' = 'SYS@test#obcluster',
+    'password' = 'pswd',
+    'split-size' = '8192',
+    'fetch-size' = '1024'
+);
+```
+
+#### Sink（写入）
+
+##### 准备
 
 在 OceanBase 数据库 MySQL 模式下的 test 库中创建目的表 t_sink。
 
@@ -88,7 +161,7 @@ CREATE TABLE `t_sink`
 );
 ```
 
-#### Flink SQL 示例
+##### Flink SQL 示例
 
 将需要用到的依赖的 JAR 文件放到 Flink 的 lib 目录下，之后通过 SQL Client 在 Flink 中创建目的表。
 
@@ -150,6 +223,8 @@ CREATE TABLE t_sink
 
 ## 配置项
 
+### 通用配置
+
 <div class="highlight">
     <table class="colwidths-auto docutils">
         <thead>
@@ -190,7 +265,7 @@ CREATE TABLE t_sink
             <tr>
                 <td>schema-name</td>
                 <td>是</td>
-                <td>不支持</td>
+                <td>是</td>
                 <td style="word-wrap: break-word;"></td>
                 <td>String</td>
                 <td>连接的 schema 名或 db 名。</td>
@@ -198,10 +273,18 @@ CREATE TABLE t_sink
             <tr>
                 <td>table-name</td>
                 <td>是</td>
-                <td>不支持</td>
+                <td>是</td>
                 <td style="word-wrap: break-word;"></td>
                 <td>String</td>
                 <td>表名。</td>
+            </tr>
+            <tr>
+                <td>compatible-mode</td>
+                <td>否</td>
+                <td>否</td>
+                <td>MySQL</td>
+                <td>String</td>
+                <td>OceanBase 的兼容模式，可选 'MySQL' 或 'Oracle'。</td>
             </tr>
             <tr>
                 <td>driver-class-name</td>
@@ -219,6 +302,76 @@ CREATE TABLE t_sink
                 <td>String</td>
                 <td>Druid 连接池属性，多个值用分号分隔。</td>
             </tr>
+            <tr>
+                <td>table.oracle-tenant-case-insensitive</td>
+                <td>否</td>
+                <td>否</td>
+                <td>true</td>
+                <td>Boolean</td>
+                <td>默认情况下，在 Oracle 租户下，Schema名和列名不区分大小写。</td>
+            </tr>
+        </tbody>
+    </table>
+</div>
+
+### Source 配置
+
+<div class="highlight">
+    <table class="colwidths-auto docutils">
+        <thead>
+            <tr>
+                <th class="text-left" style="width: 10%">参数名</th>
+                <th class="text-left" style="width: 8%">Table API 必需</th>
+                <th class="text-left" style="width: 7%">DataStream 必需</th>
+                <th class="text-left" style="width: 10%">默认值</th>
+                <th class="text-left" style="width: 15%">类型</th>
+                <th class="text-left" style="width: 50%">描述</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td>split-size</td>
+                <td>否</td>
+                <td>否</td>
+                <td>8192</td>
+                <td>Integer</td>
+                <td>并行读取时每个分片的行数。</td>
+            </tr>
+            <tr>
+                <td>chunk-key-column</td>
+                <td>否</td>
+                <td>否</td>
+                <td style="word-wrap: break-word;"></td>
+                <td>String</td>
+                <td>用于分片的列名。MySQL 模式下默认使用主键列，Oracle 模式下默认使用 ROWID。如果不指定，将根据默认策略自动分片。</td>
+            </tr>
+            <tr>
+                <td>fetch-size</td>
+                <td>否</td>
+                <td>否</td>
+                <td>1024</td>
+                <td>Integer</td>
+                <td>JDBC 查询每次获取的行数。</td>
+            </tr>
+        </tbody>
+    </table>
+</div>
+
+### Sink 配置
+
+<div class="highlight">
+    <table class="colwidths-auto docutils">
+        <thead>
+            <tr>
+                <th class="text-left" style="width: 10%">参数名</th>
+                <th class="text-left" style="width: 8%">Table API 必需</th>
+                <th class="text-left" style="width: 7%">DataStream 必需</th>
+                <th class="text-left" style="width: 10%">默认值</th>
+                <th class="text-left" style="width: 15%">类型</th>
+                <th class="text-left" style="width: 50%">描述</th>
+            </tr>
+        </thead>
+        <tbody>
             <tr>
                 <td>sync-write</td>
                 <td>否</td>
@@ -282,14 +435,6 @@ CREATE TABLE t_sink
                 <td>false</td>
                 <td>Boolean</td>
                 <td>是否启用分区计算功能，按照分区来写数据。仅当 'sync-write' 和 'direct-load.enabled' 都为 false 时生效。</td>
-            </tr>
-             <tr>
-                <td>table.oracle-tenant-case-insensitive</td>
-                <td>否</td>
-                <td>否</td>
-                <td>true</td>
-                <td>Boolean</td>
-                <td>默认情况下，在 Oracle 租户下，Schema名和列名不区分大小写。</td>
             </tr>
         </tbody>
     </table>
