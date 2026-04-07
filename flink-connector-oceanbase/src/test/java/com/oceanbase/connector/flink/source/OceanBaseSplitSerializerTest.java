@@ -114,4 +114,77 @@ public class OceanBaseSplitSerializerTest {
         assertTrue(restored.isFirstSplit());
         assertTrue(restored.isLastSplit());
     }
+
+    @Test
+    public void testSerializeDeserializeWithLastReadValue() throws IOException {
+        OceanBaseSplit split = new OceanBaseSplit("1", "schema", "table", "id", 10L, 20L);
+        split.setLastReadValue(15L);
+        OceanBaseSplitSerializer serializer = new OceanBaseSplitSerializer();
+        OceanBaseSplit restored =
+                serializer.deserialize(serializer.getVersion(), serializer.serialize(split));
+
+        assertEquals(split.getSplitStart(), restored.getSplitStart());
+        assertEquals(split.getSplitEnd(), restored.getSplitEnd());
+        assertEquals(15L, restored.getLastReadValue());
+    }
+
+    @Test
+    public void testSerializeDeserializeWithNullLastReadValue() throws IOException {
+        OceanBaseSplit split = new OceanBaseSplit("1", "schema", "table", "id", 10L, 20L);
+        OceanBaseSplitSerializer serializer = new OceanBaseSplitSerializer();
+        OceanBaseSplit restored =
+                serializer.deserialize(serializer.getVersion(), serializer.serialize(split));
+
+        assertNull(restored.getLastReadValue());
+    }
+
+    @Test
+    public void testBackwardCompatibilityV2() throws IOException {
+        // Simulate v2 serialized data (without lastReadValue)
+        OceanBaseSplit split = new OceanBaseSplit("0", "schema", "table", "id", 10L, 20L);
+        OceanBaseSplitSerializer serializer = new OceanBaseSplitSerializer();
+        // Serialize with v3 but deserialize with v2 to test backward compat
+        // We need to manually create v2 bytes (without lastReadValue field)
+        java.io.ByteArrayOutputStream baos = new java.io.ByteArrayOutputStream();
+        java.io.DataOutputStream out = new java.io.DataOutputStream(baos);
+        writeStringHelper(out, split.splitId());
+        writeStringHelper(out, split.getSchemaName());
+        writeStringHelper(out, split.getTableName());
+        writeStringHelper(out, split.getSplitColumn());
+        writeObjectHelper(out, split.getSplitStart());
+        writeObjectHelper(out, split.getSplitEnd());
+        byte[] v2Bytes = baos.toByteArray();
+
+        OceanBaseSplit restored = serializer.deserialize(2, v2Bytes);
+        assertEquals("0", restored.splitId());
+        assertEquals(10L, restored.getSplitStart());
+        assertEquals(20L, restored.getSplitEnd());
+        assertNull(restored.getLastReadValue());
+    }
+
+    private void writeStringHelper(java.io.DataOutputStream out, String value) throws IOException {
+        if (value == null) {
+            out.writeBoolean(false);
+        } else {
+            out.writeBoolean(true);
+            byte[] bytes = value.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            out.writeInt(bytes.length);
+            out.write(bytes);
+        }
+    }
+
+    private void writeObjectHelper(java.io.DataOutputStream out, Object value) throws IOException {
+        if (value == null) {
+            out.writeBoolean(false);
+            return;
+        }
+        out.writeBoolean(true);
+        java.io.ByteArrayOutputStream bytesStream = new java.io.ByteArrayOutputStream();
+        try (java.io.ObjectOutputStream oos = new java.io.ObjectOutputStream(bytesStream)) {
+            oos.writeObject(value);
+        }
+        byte[] bytes = bytesStream.toByteArray();
+        out.writeInt(bytes.length);
+        out.write(bytes);
+    }
 }

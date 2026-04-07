@@ -46,6 +46,7 @@ public class OceanBaseSourceReaderSQLTest {
     }
 
     private static OceanBaseSourceReader createOracleReader() {
+        // Default: oracleTenantCaseInsensitive = true (no quoting)
         OceanBaseSourceConfig config =
                 new OceanBaseSourceConfig(
                         "jdbc:oceanbase://127.0.0.1:2881/test",
@@ -60,11 +61,31 @@ public class OceanBaseSourceReaderSQLTest {
         return new OceanBaseSourceReader(null, config, PRODUCED_TYPE);
     }
 
+    private static OceanBaseSourceReader createOracleCaseSensitiveReader() {
+        OceanBaseSourceConfig config =
+                new OceanBaseSourceConfig(
+                        "jdbc:oceanbase://127.0.0.1:2881/test",
+                        "user",
+                        "pwd",
+                        "TEST_SCHEMA",
+                        "PRODUCTS",
+                        "Oracle",
+                        8192,
+                        "ROWID",
+                        1024,
+                        false,
+                        null,
+                        null);
+        return new OceanBaseSourceReader(null, config, PRODUCED_TYPE);
+    }
+
     @Test
     public void testMySQLQueryNoBoundary() {
         OceanBaseSourceReader reader = createMySQLReader();
         OceanBaseSplit split = new OceanBaseSplit("0", "test_db", "products", "id", null, null);
-        assertEquals("SELECT * FROM `test_db`.`products`", reader.buildQueryForTest(split));
+        assertEquals(
+                "SELECT * FROM `test_db`.`products` ORDER BY `id` ASC",
+                reader.buildQueryForTest(split));
         assertEquals(0, reader.buildQueryParamsForTest(split).length);
     }
 
@@ -73,7 +94,7 @@ public class OceanBaseSourceReaderSQLTest {
         OceanBaseSourceReader reader = createMySQLReader();
         OceanBaseSplit split = new OceanBaseSplit("0", "test_db", "products", "id", null, 50);
         assertEquals(
-                "SELECT * FROM `test_db`.`products` WHERE `id` < ?",
+                "SELECT * FROM `test_db`.`products` WHERE `id` < ? ORDER BY `id` ASC",
                 reader.buildQueryForTest(split));
         assertArrayEquals(new String[] {"50"}, reader.buildQueryParamsForTest(split));
     }
@@ -83,7 +104,7 @@ public class OceanBaseSourceReaderSQLTest {
         OceanBaseSourceReader reader = createMySQLReader();
         OceanBaseSplit split = new OceanBaseSplit("2", "test_db", "products", "id", 100, null);
         assertEquals(
-                "SELECT * FROM `test_db`.`products` WHERE `id` >= ?",
+                "SELECT * FROM `test_db`.`products` WHERE `id` >= ? ORDER BY `id` ASC",
                 reader.buildQueryForTest(split));
         assertArrayEquals(new String[] {"100"}, reader.buildQueryParamsForTest(split));
     }
@@ -93,7 +114,7 @@ public class OceanBaseSourceReaderSQLTest {
         OceanBaseSourceReader reader = createMySQLReader();
         OceanBaseSplit split = new OceanBaseSplit("1", "test_db", "products", "id", 50, 100);
         assertEquals(
-                "SELECT * FROM `test_db`.`products` WHERE `id` >= ? AND `id` < ?",
+                "SELECT * FROM `test_db`.`products` WHERE `id` >= ? AND `id` < ? ORDER BY `id` ASC",
                 reader.buildQueryForTest(split));
         assertArrayEquals(new String[] {"50", "100"}, reader.buildQueryParamsForTest(split));
     }
@@ -111,7 +132,9 @@ public class OceanBaseSourceReaderSQLTest {
         OceanBaseSourceReader reader = createOracleReader();
         OceanBaseSplit split =
                 new OceanBaseSplit("0", "TEST_SCHEMA", "PRODUCTS", "ROWID", null, null);
-        assertEquals("SELECT * FROM \"TEST_SCHEMA\".\"PRODUCTS\"", reader.buildQueryForTest(split));
+        assertEquals(
+                "SELECT * FROM TEST_SCHEMA.PRODUCTS ORDER BY ROWID ASC",
+                reader.buildQueryForTest(split));
         assertEquals(0, reader.buildQueryParamsForTest(split).length);
     }
 
@@ -122,7 +145,7 @@ public class OceanBaseSourceReaderSQLTest {
         OceanBaseSplit split =
                 new OceanBaseSplit("0", "TEST_SCHEMA", "PRODUCTS", "ROWID", null, end);
         assertEquals(
-                "SELECT * FROM \"TEST_SCHEMA\".\"PRODUCTS\" WHERE \"ROWID\" < ?",
+                "SELECT * FROM TEST_SCHEMA.PRODUCTS WHERE ROWID < ? ORDER BY ROWID ASC",
                 reader.buildQueryForTest(split));
         assertArrayEquals(new String[] {end}, reader.buildQueryParamsForTest(split));
     }
@@ -134,7 +157,7 @@ public class OceanBaseSourceReaderSQLTest {
         OceanBaseSplit split =
                 new OceanBaseSplit("2", "TEST_SCHEMA", "PRODUCTS", "ROWID", start, null);
         assertEquals(
-                "SELECT * FROM \"TEST_SCHEMA\".\"PRODUCTS\" WHERE \"ROWID\" >= ?",
+                "SELECT * FROM TEST_SCHEMA.PRODUCTS WHERE ROWID >= ? ORDER BY ROWID ASC",
                 reader.buildQueryForTest(split));
         assertArrayEquals(new String[] {start}, reader.buildQueryParamsForTest(split));
     }
@@ -147,7 +170,20 @@ public class OceanBaseSourceReaderSQLTest {
         OceanBaseSplit split =
                 new OceanBaseSplit("1", "TEST_SCHEMA", "PRODUCTS", "ROWID", start, end);
         assertEquals(
-                "SELECT * FROM \"TEST_SCHEMA\".\"PRODUCTS\" WHERE \"ROWID\" >= ? AND \"ROWID\" < ?",
+                "SELECT * FROM TEST_SCHEMA.PRODUCTS WHERE ROWID >= ? AND ROWID < ? ORDER BY ROWID ASC",
+                reader.buildQueryForTest(split));
+        assertArrayEquals(new String[] {start, end}, reader.buildQueryParamsForTest(split));
+    }
+
+    @Test
+    public void testOracleCaseSensitiveQueryMiddleSplit() {
+        OceanBaseSourceReader reader = createOracleCaseSensitiveReader();
+        String start = "AAASdqAAEAAAAInAAA";
+        String end = "AAASdqAAEAAAAInAAB";
+        OceanBaseSplit split =
+                new OceanBaseSplit("1", "TEST_SCHEMA", "PRODUCTS", "ROWID", start, end);
+        assertEquals(
+                "SELECT * FROM \"TEST_SCHEMA\".\"PRODUCTS\" WHERE \"ROWID\" >= ? AND \"ROWID\" < ? ORDER BY \"ROWID\" ASC",
                 reader.buildQueryForTest(split));
         assertArrayEquals(new String[] {start, end}, reader.buildQueryParamsForTest(split));
     }
@@ -168,6 +204,7 @@ public class OceanBaseSourceReaderSQLTest {
         assertEquals("`col``name`", mysqlConfig.quoteIdentifier("col`name"));
         assertEquals("`normal`", mysqlConfig.quoteIdentifier("normal"));
 
+        // Oracle with case-insensitive (default) - no quoting
         OceanBaseSourceConfig oracleConfig =
                 new OceanBaseSourceConfig(
                         "jdbc:oceanbase://127.0.0.1:2881/test",
@@ -179,7 +216,58 @@ public class OceanBaseSourceReaderSQLTest {
                         8192,
                         null,
                         1024);
-        assertEquals("\"col\"\"name\"", oracleConfig.quoteIdentifier("col\"name"));
-        assertEquals("\"normal\"", oracleConfig.quoteIdentifier("normal"));
+        assertEquals("normal", oracleConfig.quoteIdentifier("normal"));
+
+        // Oracle with case-sensitive - quotes identifiers
+        OceanBaseSourceConfig oracleCaseSensitiveConfig =
+                new OceanBaseSourceConfig(
+                        "jdbc:oceanbase://127.0.0.1:2881/test",
+                        "user",
+                        "pwd",
+                        "db",
+                        "t",
+                        "Oracle",
+                        8192,
+                        null,
+                        1024,
+                        false,
+                        null,
+                        null);
+        assertEquals("\"col\"\"name\"", oracleCaseSensitiveConfig.quoteIdentifier("col\"name"));
+        assertEquals("\"normal\"", oracleCaseSensitiveConfig.quoteIdentifier("normal"));
+    }
+
+    @Test
+    public void testResumeFromLastReadValue() {
+        OceanBaseSourceReader reader = createMySQLReader();
+        OceanBaseSplit split = new OceanBaseSplit("1", "test_db", "products", "id", 50, 100);
+        split.setLastReadValue(75);
+        // Should use '>' (strict) and lastReadValue instead of splitStart
+        assertEquals(
+                "SELECT * FROM `test_db`.`products` WHERE `id` > ? AND `id` < ? ORDER BY `id` ASC",
+                reader.buildQueryForTest(split));
+        assertArrayEquals(new String[] {"75", "100"}, reader.buildQueryParamsForTest(split));
+    }
+
+    @Test
+    public void testResumeFromLastReadValueLastSplit() {
+        OceanBaseSourceReader reader = createMySQLReader();
+        OceanBaseSplit split = new OceanBaseSplit("2", "test_db", "products", "id", 100, null);
+        split.setLastReadValue(150);
+        assertEquals(
+                "SELECT * FROM `test_db`.`products` WHERE `id` > ? ORDER BY `id` ASC",
+                reader.buildQueryForTest(split));
+        assertArrayEquals(new String[] {"150"}, reader.buildQueryParamsForTest(split));
+    }
+
+    @Test
+    public void testResumeFromLastReadValueFirstSplit() {
+        OceanBaseSourceReader reader = createMySQLReader();
+        OceanBaseSplit split = new OceanBaseSplit("0", "test_db", "products", "id", null, 50);
+        split.setLastReadValue(25);
+        assertEquals(
+                "SELECT * FROM `test_db`.`products` WHERE `id` > ? AND `id` < ? ORDER BY `id` ASC",
+                reader.buildQueryForTest(split));
+        assertArrayEquals(new String[] {"25", "50"}, reader.buildQueryParamsForTest(split));
     }
 }

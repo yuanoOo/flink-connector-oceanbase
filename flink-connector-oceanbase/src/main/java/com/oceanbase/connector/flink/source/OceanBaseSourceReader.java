@@ -69,6 +69,7 @@ public class OceanBaseSourceReader implements SourceReader<RowData, OceanBaseSpl
     private Connection currentConnection;
     private PreparedStatement currentStatement;
     private ResultSet currentResultSet;
+    private int splitColumnIndex = -1;
 
     public OceanBaseSourceReader(
             SourceReaderContext context, OceanBaseSourceConfig config, DataType producedDataType) {
@@ -165,6 +166,9 @@ public class OceanBaseSourceReader implements SourceReader<RowData, OceanBaseSpl
             if (currentResultSet.next()) {
                 RowData row = convertToRowData(currentResultSet);
                 output.collect(row);
+                if (splitColumnIndex > 0) {
+                    currentSplit.setLastReadValue(currentResultSet.getObject(splitColumnIndex));
+                }
                 return InputStatus.MORE_AVAILABLE;
             } else {
                 // Split exhausted
@@ -200,9 +204,22 @@ public class OceanBaseSourceReader implements SourceReader<RowData, OceanBaseSpl
         }
         currentStatement.setFetchSize(config.getFetchSize());
         currentResultSet = currentStatement.executeQuery();
+
+        // Resolve split column index for tracking lastReadValue
+        splitColumnIndex = -1;
+        if (split.getSplitColumn() != null) {
+            java.sql.ResultSetMetaData meta = currentResultSet.getMetaData();
+            for (int i = 1; i <= meta.getColumnCount(); i++) {
+                if (split.getSplitColumn().equalsIgnoreCase(meta.getColumnName(i))) {
+                    splitColumnIndex = i;
+                    break;
+                }
+            }
+        }
     }
 
     private void closeCurrentCursor() {
+        splitColumnIndex = -1;
         if (currentResultSet != null) {
             try {
                 currentResultSet.close();
@@ -366,25 +383,42 @@ public class OceanBaseSourceReader implements SourceReader<RowData, OceanBaseSpl
 
         String splitColumn = split.getSplitColumn();
         if (splitColumn != null) {
-            if (split.isFirstSplit() && split.isLastSplit()) {
+            String quotedColumn = config.quoteIdentifier(splitColumn);
+
+            // Determine effective start: use lastReadValue for checkpoint recovery
+            Object effectiveStart =
+                    split.getLastReadValue() != null
+                            ? split.getLastReadValue()
+                            : split.getSplitStart();
+            // Use strict '>' when resuming from lastReadValue, '>=' otherwise
+            String startOp = split.getLastReadValue() != null ? " > ?" : " >= ?";
+
+            boolean hasStart = effectiveStart != null;
+            boolean hasEnd = split.getSplitEnd() != null;
+
+            if (!hasStart && !hasEnd) {
+                sql.append(" ORDER BY ").append(quotedColumn).append(" ASC");
                 return sql.toString();
             }
 
             sql.append(" WHERE ");
-            if (split.isFirstSplit()) {
-                sql.append(config.quoteIdentifier(splitColumn)).append(" < ?");
-                params.add(split.getSplitEnd());
-            } else if (split.isLastSplit()) {
-                sql.append(config.quoteIdentifier(splitColumn)).append(" >= ?");
-                params.add(split.getSplitStart());
-            } else {
-                sql.append(config.quoteIdentifier(splitColumn))
-                        .append(" >= ? AND ")
-                        .append(config.quoteIdentifier(splitColumn))
+            if (hasStart && hasEnd) {
+                sql.append(quotedColumn)
+                        .append(startOp)
+                        .append(" AND ")
+                        .append(quotedColumn)
                         .append(" < ?");
-                params.add(split.getSplitStart());
+                params.add(effectiveStart);
+                params.add(split.getSplitEnd());
+            } else if (hasStart) {
+                sql.append(quotedColumn).append(startOp);
+                params.add(effectiveStart);
+            } else {
+                sql.append(quotedColumn).append(" < ?");
                 params.add(split.getSplitEnd());
             }
+
+            sql.append(" ORDER BY ").append(quotedColumn).append(" ASC");
         }
         return sql.toString();
     }
@@ -393,10 +427,7 @@ public class OceanBaseSourceReader implements SourceReader<RowData, OceanBaseSpl
         if (dataSource == null) {
             synchronized (this) {
                 if (dataSource == null) {
-                    dataSource = new DruidDataSource();
-                    dataSource.setUrl(config.getUrl());
-                    dataSource.setUsername(config.getUsername());
-                    dataSource.setPassword(config.getPassword());
+                    dataSource = config.createConfiguredDataSource();
                     dataSource.setInitialSize(1);
                     dataSource.setMinIdle(1);
                     dataSource.setMaxActive(2);

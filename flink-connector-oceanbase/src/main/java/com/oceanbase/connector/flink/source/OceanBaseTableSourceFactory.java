@@ -116,7 +116,11 @@ public class OceanBaseTableSourceFactory implements DynamicTableSourceFactory {
                         config.get(COMPATIBLE_MODE),
                         config.get(SPLIT_SIZE),
                         config.get(CHUNK_KEY_COLUMN),
-                        config.get(FETCH_SIZE));
+                        config.get(FETCH_SIZE),
+                        config.get(OceanBaseConnectorOptions.TABLE_ORACLE_TENANT_CASE_INSENSITIVE),
+                        config.get(OceanBaseConnectorOptions.DRIVER_CLASS_NAME),
+                        config.getOptional(OceanBaseConnectorOptions.DRUID_PROPERTIES)
+                                .orElse(null));
 
         DataType producedDataType =
                 context.getCatalogTable().getResolvedSchema().toPhysicalRowDataType();

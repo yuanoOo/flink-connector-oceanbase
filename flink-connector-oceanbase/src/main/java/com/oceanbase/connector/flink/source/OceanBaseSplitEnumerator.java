@@ -97,9 +97,12 @@ public class OceanBaseSplitEnumerator
 
         if (!pendingSplits.isEmpty()) {
             assignSplitToReader(subtaskId);
-        } else {
+        } else if (inFlightSplits.isEmpty()) {
             readersAwaitingSplit.remove(subtaskId);
             context.signalNoMoreSplits(subtaskId);
+        } else {
+            // In-flight splits may come back via addSplitsBack(); keep reader waiting
+            readersAwaitingSplit.add(subtaskId);
         }
     }
 
@@ -112,6 +115,14 @@ public class OceanBaseSplitEnumerator
         }
         dedupePendingSplits();
         assignPendingSplits();
+
+        // If all splits are now processed, signal remaining waiting readers
+        if (pendingSplits.isEmpty() && inFlightSplits.isEmpty()) {
+            for (int reader : readersAwaitingSplit) {
+                context.signalNoMoreSplits(reader);
+            }
+            readersAwaitingSplit.clear();
+        }
     }
 
     @Override
@@ -324,6 +335,13 @@ public class OceanBaseSplitEnumerator
             for (int i = 1; i < numSplits; i++) {
                 points.add(minVal.add(step.multiply(new BigDecimal(i))));
             }
+        } else if (min instanceof Long || min instanceof Integer) {
+            long minVal = ((Number) min).longValue();
+            long maxVal = ((Number) max).longValue();
+            long range = maxVal - minVal;
+            for (int i = 1; i < numSplits; i++) {
+                points.add(minVal + range * i / numSplits);
+            }
         } else if (min instanceof Number && max instanceof Number) {
             double minVal = ((Number) min).doubleValue();
             double maxVal = ((Number) max).doubleValue();
@@ -429,7 +447,8 @@ public class OceanBaseSplitEnumerator
     }
 
     private void assignPendingSplits() {
-        for (int reader : readersAwaitingSplit) {
+        List<Integer> readers = new ArrayList<>(readersAwaitingSplit);
+        for (int reader : readers) {
             if (!pendingSplits.isEmpty() && !inFlightSplits.containsKey(reader)) {
                 assignSplitToReader(reader);
             }
@@ -442,8 +461,10 @@ public class OceanBaseSplitEnumerator
         }
 
         if (pendingSplits.isEmpty()) {
-            readersAwaitingSplit.remove(subtaskId);
-            context.signalNoMoreSplits(subtaskId);
+            if (inFlightSplits.isEmpty()) {
+                readersAwaitingSplit.remove(subtaskId);
+                context.signalNoMoreSplits(subtaskId);
+            }
             return;
         }
 
@@ -485,10 +506,7 @@ public class OceanBaseSplitEnumerator
         if (dataSource == null) {
             synchronized (this) {
                 if (dataSource == null) {
-                    dataSource = new DruidDataSource();
-                    dataSource.setUrl(config.getUrl());
-                    dataSource.setUsername(config.getUsername());
-                    dataSource.setPassword(config.getPassword());
+                    dataSource = config.createConfiguredDataSource();
                     dataSource.setInitialSize(1);
                     dataSource.setMinIdle(1);
                     dataSource.setMaxActive(5);

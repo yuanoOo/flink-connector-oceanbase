@@ -30,7 +30,7 @@ import java.util.List;
 public class OceanBaseEnumeratorStateSerializer
         implements SimpleVersionedSerializer<OceanBaseEnumeratorState> {
 
-    private static final int CURRENT_VERSION = 2;
+    private static final int CURRENT_VERSION = 3;
     private final OceanBaseSplitSerializer splitSerializer = new OceanBaseSplitSerializer();
 
     @Override
@@ -55,8 +55,10 @@ public class OceanBaseEnumeratorStateSerializer
         try (ByteArrayInputStream bais = new ByteArrayInputStream(serialized);
                 DataInputStream in = new DataInputStream(bais)) {
 
-            List<OceanBaseSplit> inFlightSplits = readSplitList(in);
-            List<OceanBaseSplit> pendingSplits = readSplitList(in);
+            // State version and split serializer version are kept in sync
+            int splitVersion = version;
+            List<OceanBaseSplit> inFlightSplits = readSplitList(in, splitVersion);
+            List<OceanBaseSplit> pendingSplits = readSplitList(in, splitVersion);
 
             return new OceanBaseEnumeratorState(inFlightSplits, pendingSplits);
         }
@@ -72,14 +74,15 @@ public class OceanBaseEnumeratorStateSerializer
         }
     }
 
-    private List<OceanBaseSplit> readSplitList(DataInputStream in) throws IOException {
+    private List<OceanBaseSplit> readSplitList(DataInputStream in, int splitVersion)
+            throws IOException {
         int size = in.readInt();
         List<OceanBaseSplit> splits = new ArrayList<>(size);
         for (int i = 0; i < size; i++) {
             int length = in.readInt();
             byte[] splitBytes = new byte[length];
             in.readFully(splitBytes);
-            splits.add(splitSerializer.deserialize(splitSerializer.getVersion(), splitBytes));
+            splits.add(splitSerializer.deserialize(splitVersion, splitBytes));
         }
         return splits;
     }

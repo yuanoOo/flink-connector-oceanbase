@@ -30,6 +30,9 @@ public class OceanBaseSourceBuilder {
     private int splitSize = 8192;
     private String chunkKeyColumn;
     private int fetchSize = 1024;
+    private boolean oracleTenantCaseInsensitive = true;
+    private String driverClassName;
+    private String druidProperties;
     private DataType producedDataType;
 
     public OceanBaseSourceBuilder url(String url) {
@@ -77,6 +80,21 @@ public class OceanBaseSourceBuilder {
         return this;
     }
 
+    public OceanBaseSourceBuilder oracleTenantCaseInsensitive(boolean oracleTenantCaseInsensitive) {
+        this.oracleTenantCaseInsensitive = oracleTenantCaseInsensitive;
+        return this;
+    }
+
+    public OceanBaseSourceBuilder driverClassName(String driverClassName) {
+        this.driverClassName = driverClassName;
+        return this;
+    }
+
+    public OceanBaseSourceBuilder druidProperties(String druidProperties) {
+        this.druidProperties = druidProperties;
+        return this;
+    }
+
     public OceanBaseSourceBuilder producedDataType(DataType producedDataType) {
         this.producedDataType = producedDataType;
         return this;
@@ -93,7 +111,10 @@ public class OceanBaseSourceBuilder {
                         compatibleMode,
                         splitSize,
                         chunkKeyColumn,
-                        fetchSize);
+                        fetchSize,
+                        oracleTenantCaseInsensitive,
+                        driverClassName,
+                        druidProperties);
 
         return new OceanBaseSource(config, producedDataType);
     }

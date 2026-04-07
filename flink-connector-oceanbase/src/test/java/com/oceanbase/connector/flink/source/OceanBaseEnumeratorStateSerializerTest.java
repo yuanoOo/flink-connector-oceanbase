@@ -94,6 +94,24 @@ public class OceanBaseEnumeratorStateSerializerTest {
         assertSplitEquals(nullColumnSplit, restored.getPendingSplits().get(1));
     }
 
+    @Test
+    public void testStateRoundTripWithLastReadValue() throws IOException {
+        OceanBaseSplit inFlight =
+                new OceanBaseSplit("1", "test_schema", "test_table", "id", 10L, 20L);
+        inFlight.setLastReadValue(15L);
+
+        OceanBaseEnumeratorState original =
+                new OceanBaseEnumeratorState(Arrays.asList(inFlight), new ArrayList<>());
+
+        OceanBaseEnumeratorStateSerializer serializer = new OceanBaseEnumeratorStateSerializer();
+        byte[] bytes = serializer.serialize(original);
+        OceanBaseEnumeratorState restored = serializer.deserialize(serializer.getVersion(), bytes);
+
+        assertEquals(1, restored.getInFlightSplits().size());
+        assertSplitEquals(inFlight, restored.getInFlightSplits().get(0));
+        assertEquals(15L, restored.getInFlightSplits().get(0).getLastReadValue());
+    }
+
     private void assertSplitEquals(OceanBaseSplit expected, OceanBaseSplit actual) {
         assertEquals(expected.splitId(), actual.splitId());
         assertEquals(expected.getSchemaName(), actual.getSchemaName());
@@ -103,5 +121,6 @@ public class OceanBaseEnumeratorStateSerializerTest {
         assertEquals(expected.getSplitEnd(), actual.getSplitEnd());
         assertEquals(expected.isFirstSplit(), actual.isFirstSplit());
         assertEquals(expected.isLastSplit(), actual.isLastSplit());
+        assertEquals(expected.getLastReadValue(), actual.getLastReadValue());
     }
 }

@@ -80,8 +80,9 @@ public class OceanBaseSplitEnumeratorTest {
         OceanBaseSourceConfig mysqlConfig = createConfig("MySQL", null);
         assertEquals("`column_name`", mysqlConfig.quoteIdentifier("column_name"));
 
+        // Oracle default: case-insensitive, no quoting
         OceanBaseSourceConfig oracleConfig = createConfig("Oracle", null);
-        assertEquals("\"column_name\"", oracleConfig.quoteIdentifier("column_name"));
+        assertEquals("column_name", oracleConfig.quoteIdentifier("column_name"));
     }
 
     @Test
@@ -119,9 +120,52 @@ public class OceanBaseSplitEnumeratorTest {
     }
 
     @Test
-    public void testNumericSplitPoints() {
+    public void testSingleSplitWithSplitColumn() {
+        OceanBaseSourceReader reader =
+                new OceanBaseSourceReader(null, createConfig("MySQL", "id"), PRODUCED_TYPE);
+        OceanBaseSplit split =
+                new OceanBaseSplit("0", "test_schema", "test_table", "id", null, null);
+        String sql = reader.buildQueryForTest(split);
+        assertEquals("SELECT * FROM `test_schema`.`test_table` ORDER BY `id` ASC", sql);
+        assertEquals(0, reader.buildQueryParamsForTest(split).length);
+    }
+
+    @Test
+    public void testIntegerSplitPoints() {
         OceanBaseSplitEnumerator enumerator = createEnumerator("MySQL", "id");
         List<Object> points = enumerator.generateSplitPointsForTest("id", 0, 100, 4);
+
+        assertEquals(5, points.size());
+        assertNull(points.get(0));
+        assertNull(points.get(points.size() - 1));
+
+        assertTrue(points.get(1) instanceof Long);
+        assertEquals(25L, points.get(1));
+        assertEquals(50L, points.get(2));
+        assertEquals(75L, points.get(3));
+    }
+
+    @Test
+    public void testLongSplitPointsNoPrecisionLoss() {
+        OceanBaseSplitEnumerator enumerator = createEnumerator("MySQL", "id");
+        long min = (1L << 53) + 100;
+        long max = (1L << 53) + 500;
+        List<Object> points = enumerator.generateSplitPointsForTest("id", min, max, 4);
+
+        assertEquals(5, points.size());
+        assertNull(points.get(0));
+        assertNull(points.get(points.size() - 1));
+
+        assertTrue(points.get(1) instanceof Long);
+        assertEquals(min + 100L, points.get(1));
+        assertEquals(min + 200L, points.get(2));
+        assertEquals(min + 300L, points.get(3));
+    }
+
+    @Test
+    public void testDoubleSplitPoints() {
+        OceanBaseSplitEnumerator enumerator = createEnumerator("MySQL", "id");
+        List<Object> points = enumerator.generateSplitPointsForTest("id", 0.0, 100.0, 4);
 
         assertEquals(5, points.size());
         assertNull(points.get(0));
