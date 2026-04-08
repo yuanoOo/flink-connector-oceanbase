@@ -24,6 +24,8 @@ import java.util.ArrayList;
 import java.util.Arrays;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /** Unit tests for {@link OceanBaseEnumeratorStateSerializer}. */
 public class OceanBaseEnumeratorStateSerializerTest {
@@ -44,6 +46,7 @@ public class OceanBaseEnumeratorStateSerializerTest {
 
         assertEquals(1, restored.getInFlightSplits().size());
         assertEquals(1, restored.getPendingSplits().size());
+        assertTrue(restored.isSplitDiscoveryFinished());
         assertSplitEquals(inFlight, restored.getInFlightSplits().get(0));
         assertSplitEquals(pending, restored.getPendingSplits().get(0));
     }
@@ -59,6 +62,41 @@ public class OceanBaseEnumeratorStateSerializerTest {
 
         assertEquals(0, restored.getInFlightSplits().size());
         assertEquals(0, restored.getPendingSplits().size());
+        assertTrue(restored.isSplitDiscoveryFinished());
+    }
+
+    @Test
+    public void testStateRoundTripWithDiscoveryInProgress() throws IOException {
+        OceanBaseSplit pending =
+                new OceanBaseSplit("0", "test_schema", "test_table", "name", null, "M");
+
+        OceanBaseEnumeratorState original =
+                new OceanBaseEnumeratorState(new ArrayList<>(), Arrays.asList(pending), false);
+
+        OceanBaseEnumeratorStateSerializer serializer = new OceanBaseEnumeratorStateSerializer();
+        byte[] bytes = serializer.serialize(original);
+        OceanBaseEnumeratorState restored = serializer.deserialize(serializer.getVersion(), bytes);
+
+        assertEquals(0, restored.getInFlightSplits().size());
+        assertEquals(1, restored.getPendingSplits().size());
+        assertFalse(restored.isSplitDiscoveryFinished());
+    }
+
+    @Test
+    public void testV3DeserializationDefaultsDiscoveryFinished() throws IOException {
+        // Simulate v3 serialized  just two empty split lists, no boolean
+        java.io.ByteArrayOutputStream baos = new java.io.ByteArrayOutputStream();
+        java.io.DataOutputStream out = new java.io.DataOutputStream(baos);
+        out.writeInt(0); // inFlightSplits size
+        out.writeInt(0); // pendingSplits size
+        byte[] v3Bytes = baos.toByteArray();
+
+        OceanBaseEnumeratorStateSerializer serializer = new OceanBaseEnumeratorStateSerializer();
+        OceanBaseEnumeratorState restored = serializer.deserialize(3, v3Bytes);
+
+        assertEquals(0, restored.getInFlightSplits().size());
+        assertEquals(0, restored.getPendingSplits().size());
+        assertTrue(restored.isSplitDiscoveryFinished());
     }
 
     @Test

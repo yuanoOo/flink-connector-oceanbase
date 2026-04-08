@@ -30,7 +30,7 @@ import java.util.List;
 public class OceanBaseEnumeratorStateSerializer
         implements SimpleVersionedSerializer<OceanBaseEnumeratorState> {
 
-    private static final int CURRENT_VERSION = 3;
+    private static final int CURRENT_VERSION = 4;
     private final OceanBaseSplitSerializer splitSerializer = new OceanBaseSplitSerializer();
 
     @Override
@@ -45,6 +45,7 @@ public class OceanBaseEnumeratorStateSerializer
 
             writeSplitList(out, state.getInFlightSplits());
             writeSplitList(out, state.getPendingSplits());
+            out.writeBoolean(state.isSplitDiscoveryFinished());
 
             return baos.toByteArray();
         }
@@ -55,12 +56,16 @@ public class OceanBaseEnumeratorStateSerializer
         try (ByteArrayInputStream bais = new ByteArrayInputStream(serialized);
                 DataInputStream in = new DataInputStream(bais)) {
 
-            // State version and split serializer version are kept in sync
-            int splitVersion = version;
+            // Split serializer version: v4 state uses v3 split format
+            int splitVersion = Math.min(version, 3);
             List<OceanBaseSplit> inFlightSplits = readSplitList(in, splitVersion);
             List<OceanBaseSplit> pendingSplits = readSplitList(in, splitVersion);
 
-            return new OceanBaseEnumeratorState(inFlightSplits, pendingSplits);
+            // v4+ includes splitDiscoveryFinished; older versions default to true
+            boolean splitDiscoveryFinished = version >= 4 ? in.readBoolean() : true;
+
+            return new OceanBaseEnumeratorState(
+                    inFlightSplits, pendingSplits, splitDiscoveryFinished);
         }
     }
 

@@ -40,12 +40,23 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
-/** Split enumerator for OceanBase parallel snapshot read. */
+/**
+ * Split enumerator for OceanBase parallel snapshot read.
+ *
+ * <p>Split discovery runs asynchronously on a background thread. Splits are added to the pending
+ * queue incrementally as they are calculated, allowing readers to start processing data before all
+ * splits have been discovered. This is especially beneficial for tables with non-numeric primary
+ * keys (e.g., VARCHAR), where each split point requires an expensive ORDER BY + OFFSET query.
+ */
 public class OceanBaseSplitEnumerator
         implements SplitEnumerator<OceanBaseSplit, OceanBaseEnumeratorState> {
 
     private static final Logger LOG = LoggerFactory.getLogger(OceanBaseSplitEnumerator.class);
+    private static final long SPLIT_CHECK_INTERVAL_MS = 200L;
 
     private final SplitEnumeratorContext<OceanBaseSplit> context;
     private final OceanBaseSourceConfig config;
@@ -53,8 +64,13 @@ public class OceanBaseSplitEnumerator
     private final Map<Integer, OceanBaseSplit> inFlightSplits;
     private final Set<Integer> readersAwaitingSplit;
     private volatile long cachedRowCount = -1L;
+    private volatile boolean splitDiscoveryFinished = false;
 
     private volatile DruidDataSource dataSource;
+    private ExecutorService splitDiscoveryExecutor;
+    // Tracks split boundary keys already in pendingSplits to avoid adding duplicates during
+    // re-discovery after checkpoint restore.
+    private final Set<String> knownSplitKeys = ConcurrentHashMap.newKeySet();
 
     public OceanBaseSplitEnumerator(
             SplitEnumeratorContext<OceanBaseSplit> context,
@@ -70,6 +86,10 @@ public class OceanBaseSplitEnumerator
             this.pendingSplits.addAll(restoredState.getPendingSplits());
             this.pendingSplits.addAll(restoredState.getInFlightSplits());
             dedupePendingSplits();
+            for (OceanBaseSplit split : pendingSplits) {
+                knownSplitKeys.add(splitBoundaryKey(split));
+            }
+            this.splitDiscoveryFinished = restoredState.isSplitDiscoveryFinished();
         }
     }
 
@@ -77,8 +97,8 @@ public class OceanBaseSplitEnumerator
     public void start() {
         LOG.info("Starting OceanBase split enumerator");
 
-        if (pendingSplits.isEmpty()) {
-            discoverSplits();
+        if (!splitDiscoveryFinished) {
+            startAsyncSplitDiscovery();
         }
 
         assignPendingSplits();
@@ -95,14 +115,15 @@ public class OceanBaseSplitEnumerator
                     finishedSplit.splitId());
         }
 
-        if (!pendingSplits.isEmpty()) {
-            assignSplitToReader(subtaskId);
-        } else if (inFlightSplits.isEmpty()) {
-            readersAwaitingSplit.remove(subtaskId);
-            context.signalNoMoreSplits(subtaskId);
-        } else {
-            // In-flight splits may come back via addSplitsBack(); keep reader waiting
-            readersAwaitingSplit.add(subtaskId);
+        synchronized (pendingSplits) {
+            if (!pendingSplits.isEmpty()) {
+                assignSplitToReader(subtaskId);
+            } else if (splitDiscoveryFinished && inFlightSplits.isEmpty()) {
+                readersAwaitingSplit.remove(subtaskId);
+                context.signalNoMoreSplits(subtaskId);
+            } else {
+                readersAwaitingSplit.add(subtaskId);
+            }
         }
     }
 
@@ -110,18 +131,16 @@ public class OceanBaseSplitEnumerator
     public void addSplitsBack(List<OceanBaseSplit> splits, int subtaskId) {
         LOG.debug("Received {} splits back from subtask {}", splits.size(), subtaskId);
         inFlightSplits.remove(subtaskId);
-        for (OceanBaseSplit split : splits) {
-            pendingSplits.addLast(split);
+        synchronized (pendingSplits) {
+            for (OceanBaseSplit split : splits) {
+                pendingSplits.addLast(split);
+            }
+            dedupePendingSplits();
         }
-        dedupePendingSplits();
         assignPendingSplits();
 
-        // If all splits are now processed, signal remaining waiting readers
-        if (pendingSplits.isEmpty() && inFlightSplits.isEmpty()) {
-            for (int reader : readersAwaitingSplit) {
-                context.signalNoMoreSplits(reader);
-            }
-            readersAwaitingSplit.clear();
+        if (splitDiscoveryFinished) {
+            signalNoMoreSplitsIfDone();
         }
     }
 
@@ -131,50 +150,254 @@ public class OceanBaseSplitEnumerator
         readersAwaitingSplit.add(subtaskId);
         inFlightSplits.remove(subtaskId);
 
-        if (!pendingSplits.isEmpty()) {
-            assignSplitToReader(subtaskId);
-        } else if (pendingSplits.isEmpty() && inFlightSplits.isEmpty()) {
-            readersAwaitingSplit.remove(subtaskId);
-            context.signalNoMoreSplits(subtaskId);
+        synchronized (pendingSplits) {
+            if (!pendingSplits.isEmpty()) {
+                assignSplitToReader(subtaskId);
+            } else if (splitDiscoveryFinished && inFlightSplits.isEmpty()) {
+                readersAwaitingSplit.remove(subtaskId);
+                context.signalNoMoreSplits(subtaskId);
+            }
         }
     }
 
     @Override
     public OceanBaseEnumeratorState snapshotState(long checkpointId) throws Exception {
-        return new OceanBaseEnumeratorState(
-                new ArrayList<>(inFlightSplits.values()), new ArrayList<>(pendingSplits));
+        synchronized (pendingSplits) {
+            return new OceanBaseEnumeratorState(
+                    new ArrayList<>(inFlightSplits.values()),
+                    new ArrayList<>(pendingSplits),
+                    splitDiscoveryFinished);
+        }
     }
 
     @Override
     public void close() throws IOException {
+        if (splitDiscoveryExecutor != null) {
+            splitDiscoveryExecutor.shutdownNow();
+            try {
+                splitDiscoveryExecutor.awaitTermination(5, TimeUnit.SECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        }
         if (dataSource != null) {
             dataSource.close();
         }
     }
 
-    private void discoverSplits() {
+    // ---- Async split discovery ----
+
+    private void startAsyncSplitDiscovery() {
+        splitDiscoveryExecutor =
+                Executors.newSingleThreadExecutor(
+                        r -> {
+                            Thread t = new Thread(r, "ob-split-discovery");
+                            t.setDaemon(true);
+                            return t;
+                        });
+        splitDiscoveryExecutor.submit(this::discoverSplitsAsync);
+
+        // Periodically check for newly discovered splits and assign them
+        context.callAsync(
+                () -> !splitDiscoveryFinished,
+                (stillRunning, error) -> {
+                    if (error != null) {
+                        LOG.error("Error checking split discovery status", error);
+                        return;
+                    }
+                    assignPendingSplits();
+                    if (splitDiscoveryFinished) {
+                        signalNoMoreSplitsIfDone();
+                    }
+                },
+                0,
+                SPLIT_CHECK_INTERVAL_MS);
+    }
+
+    private void discoverSplitsAsync() {
         try {
             String splitColumn = config.getChunkKeyColumn();
             if (splitColumn == null || splitColumn.isEmpty()) {
                 splitColumn = getDefaultSplitColumn();
             }
 
-            List<OceanBaseSplit> splits = calculateSplits(splitColumn);
-            for (OceanBaseSplit split : splits) {
-                pendingSplits.addLast(split);
-            }
-            dedupePendingSplits();
+            calculateSplitsAsync(splitColumn);
+
             LOG.info(
-                    "Discovered {} splits for table {}.{}",
-                    pendingSplits.size(),
+                    "Async split discovery completed for table {}.{}",
                     config.getSchemaName(),
                     config.getTableName());
-
         } catch (SQLException e) {
-            LOG.error("Failed to discover splits", e);
+            LOG.error("Failed to discover splits asynchronously", e);
             throw new RuntimeException("Failed to discover splits", e);
+        } finally {
+            splitDiscoveryFinished = true;
         }
     }
+
+    private void calculateSplitsAsync(String splitColumn) throws SQLException {
+        if (splitColumn == null) {
+            addSplitToPending(
+                    new OceanBaseSplit(
+                            "0", config.getSchemaName(), config.getTableName(), null, null, null));
+            return;
+        }
+
+        Object[] minMax = getMinMax(splitColumn);
+        if (minMax == null) {
+            return;
+        }
+
+        Object min = minMax[0];
+        Object max = minMax[1];
+
+        if (min == null || max == null) {
+            return;
+        }
+
+        long rowCount = getRowCountCached();
+        int numSplits = Math.max(1, (int) Math.ceil((double) rowCount / config.getSplitSize()));
+
+        if (numSplits <= 1) {
+            addSplitToPending(
+                    new OceanBaseSplit(
+                            "0",
+                            config.getSchemaName(),
+                            config.getTableName(),
+                            splitColumn,
+                            null,
+                            null));
+            return;
+        }
+
+        // For numeric types, calculate all split points at once (no DB queries needed)
+        if (isNumericSplittable(min, max)) {
+            List<Object> splitPoints = generateNumericSplitPoints(min, max, numSplits);
+            addAllSplitsFromPoints(splitColumn, splitPoints);
+            return;
+        }
+
+        // For non-numeric types (String, Date, etc.), calculate split points incrementally.
+        // Each point requires an ORDER BY + OFFSET query, so we add splits as we go,
+        // allowing readers to start reading before all points are calculated.
+        generateSplitsIncrementally(splitColumn, numSplits, rowCount);
+    }
+
+    private boolean isNumericSplittable(Object min, Object max) {
+        return (min instanceof BigDecimal && max instanceof BigDecimal)
+                || (min instanceof Long || min instanceof Integer)
+                || (min instanceof Number && max instanceof Number);
+    }
+
+    private void generateSplitsIncrementally(String splitColumn, int numSplits, long rowCount) {
+        List<Object> allPoints = new ArrayList<>();
+        allPoints.add(null); // First boundary is always null (open start)
+
+        int splitIndex = 0;
+        for (int i = 1; i < numSplits; i++) {
+            long offset = Math.max(0L, Math.round((double) rowCount * i / numSplits));
+            if (offset <= 0 || offset >= rowCount) {
+                continue;
+            }
+
+            Object point = querySplitPointByOffset(splitColumn, offset);
+            if (point == null) {
+                continue;
+            }
+
+            // Skip duplicate split points
+            if (!allPoints.isEmpty()) {
+                Object lastPoint = allPoints.get(allPoints.size() - 1);
+                if (point.equals(lastPoint)) {
+                    continue;
+                }
+            }
+
+            allPoints.add(point);
+
+            // Emit split for the range [previous_point, current_point)
+            Object prevPoint = allPoints.get(allPoints.size() - 2);
+            addSplitToPending(
+                    new OceanBaseSplit(
+                            String.valueOf(splitIndex++),
+                            config.getSchemaName(),
+                            config.getTableName(),
+                            splitColumn,
+                            prevPoint,
+                            point));
+
+            LOG.debug(
+                    "Discovered split {} for table {}.{} ({}/{})",
+                    splitIndex,
+                    config.getSchemaName(),
+                    config.getTableName(),
+                    i,
+                    numSplits);
+        }
+
+        // Final split: [last_point, null) — covers remaining rows
+        Object lastPoint = allPoints.get(allPoints.size() - 1);
+        addSplitToPending(
+                new OceanBaseSplit(
+                        String.valueOf(splitIndex),
+                        config.getSchemaName(),
+                        config.getTableName(),
+                        splitColumn,
+                        lastPoint,
+                        null));
+    }
+
+    private void addSplitToPending(OceanBaseSplit split) {
+        String key = splitBoundaryKey(split);
+        if (!knownSplitKeys.add(key)) {
+            // Split with same boundaries already exists (from checkpoint restore); skip
+            return;
+        }
+        synchronized (pendingSplits) {
+            pendingSplits.addLast(split);
+        }
+    }
+
+    private static String splitBoundaryKey(OceanBaseSplit split) {
+        return split.getSchemaName()
+                + "."
+                + split.getTableName()
+                + "#"
+                + split.getSplitColumn()
+                + "#"
+                + split.getSplitStart()
+                + "#"
+                + split.getSplitEnd();
+    }
+
+    private void addAllSplitsFromPoints(String splitColumn, List<Object> splitPoints) {
+        synchronized (pendingSplits) {
+            for (int i = 0; i < splitPoints.size() - 1; i++) {
+                pendingSplits.addLast(
+                        new OceanBaseSplit(
+                                String.valueOf(i),
+                                config.getSchemaName(),
+                                config.getTableName(),
+                                splitColumn,
+                                splitPoints.get(i),
+                                splitPoints.get(i + 1)));
+            }
+            dedupePendingSplits();
+        }
+    }
+
+    private void signalNoMoreSplitsIfDone() {
+        synchronized (pendingSplits) {
+            if (pendingSplits.isEmpty() && inFlightSplits.isEmpty()) {
+                for (int reader : readersAwaitingSplit) {
+                    context.signalNoMoreSplits(reader);
+                }
+                readersAwaitingSplit.clear();
+            }
+        }
+    }
+
+    // ---- Split point generation ----
 
     private String getDefaultSplitColumn() throws SQLException {
         if (config.isOracleMode()) {
@@ -200,59 +423,6 @@ public class OceanBaseSplitEnumerator
                 config.getSchemaName(),
                 config.getTableName());
         return null;
-    }
-
-    private List<OceanBaseSplit> calculateSplits(String splitColumn) throws SQLException {
-        List<OceanBaseSplit> splits = new ArrayList<>();
-
-        if (splitColumn == null) {
-            splits.add(
-                    new OceanBaseSplit(
-                            "0", config.getSchemaName(), config.getTableName(), null, null, null));
-            return splits;
-        }
-
-        Object[] minMax = getMinMax(splitColumn);
-        if (minMax == null) {
-            return splits;
-        }
-
-        Object min = minMax[0];
-        Object max = minMax[1];
-
-        if (min == null || max == null) {
-            return splits;
-        }
-
-        long rowCount = getRowCountCached();
-        int numSplits = Math.max(1, (int) Math.ceil((double) rowCount / config.getSplitSize()));
-
-        if (numSplits <= 1) {
-            splits.add(
-                    new OceanBaseSplit(
-                            "0",
-                            config.getSchemaName(),
-                            config.getTableName(),
-                            splitColumn,
-                            null,
-                            null));
-            return splits;
-        }
-
-        List<Object> splitPoints = generateSplitPoints(splitColumn, min, max, numSplits);
-
-        for (int i = 0; i < splitPoints.size() - 1; i++) {
-            splits.add(
-                    new OceanBaseSplit(
-                            String.valueOf(i),
-                            config.getSchemaName(),
-                            config.getTableName(),
-                            splitColumn,
-                            splitPoints.get(i),
-                            splitPoints.get(i + 1)));
-        }
-
-        return splits;
     }
 
     private Object[] getMinMax(String splitColumn) throws SQLException {
@@ -304,8 +474,7 @@ public class OceanBaseSplitEnumerator
         }
     }
 
-    private List<Object> generateSplitPoints(
-            String splitColumn, Object min, Object max, int numSplits) {
+    private List<Object> generateNumericSplitPoints(Object min, Object max, int numSplits) {
         List<Object> points = new ArrayList<>();
         points.add(null);
 
@@ -334,18 +503,6 @@ public class OceanBaseSplitEnumerator
             for (int i = 1; i < numSplits; i++) {
                 points.add(minVal + step * i);
             }
-        } else {
-            long rowCount = getRowCountCached();
-            for (int i = 1; i < numSplits; i++) {
-                long offset = Math.max(0L, Math.round((double) rowCount * i / numSplits));
-                if (offset <= 0 || offset >= rowCount) {
-                    continue;
-                }
-                Object point = querySplitPointByOffset(splitColumn, offset);
-                if (point != null) {
-                    points.add(point);
-                }
-            }
         }
 
         points.add(null);
@@ -354,7 +511,7 @@ public class OceanBaseSplitEnumerator
 
     List<Object> generateSplitPointsForTest(
             String splitColumn, Object min, Object max, int numSplits) {
-        return generateSplitPoints(splitColumn, min, max, numSplits);
+        return generateNumericSplitPoints(min, max, numSplits);
     }
 
     private Object querySplitPointByOffset(String splitColumn, long offset) {
@@ -430,22 +587,27 @@ public class OceanBaseSplitEnumerator
         return config.quoteIdentifier(identifier);
     }
 
+    // ---- Split assignment ----
+
     private void assignPendingSplits() {
         List<Integer> readers = new ArrayList<>(readersAwaitingSplit);
-        for (int reader : readers) {
-            if (!pendingSplits.isEmpty() && !inFlightSplits.containsKey(reader)) {
-                assignSplitToReader(reader);
+        synchronized (pendingSplits) {
+            for (int reader : readers) {
+                if (!pendingSplits.isEmpty() && !inFlightSplits.containsKey(reader)) {
+                    assignSplitToReader(reader);
+                }
             }
         }
     }
 
+    /** Must be called while holding the pendingSplits lock. */
     private void assignSplitToReader(int subtaskId) {
         if (inFlightSplits.containsKey(subtaskId)) {
             return;
         }
 
         if (pendingSplits.isEmpty()) {
-            if (inFlightSplits.isEmpty()) {
+            if (splitDiscoveryFinished && inFlightSplits.isEmpty()) {
                 readersAwaitingSplit.remove(subtaskId);
                 context.signalNoMoreSplits(subtaskId);
             }

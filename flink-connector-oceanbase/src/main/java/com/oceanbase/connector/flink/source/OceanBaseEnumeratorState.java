@@ -29,16 +29,27 @@ public class OceanBaseEnumeratorState implements Serializable {
     private final List<OceanBaseSplit> inFlightSplits;
     // Splits that have not been assigned yet.
     private final List<OceanBaseSplit> pendingSplits;
+    // Whether split discovery has completed. If false on restore, discovery must be re-run.
+    private final boolean splitDiscoveryFinished;
 
     public OceanBaseEnumeratorState() {
         this.inFlightSplits = new ArrayList<>();
         this.pendingSplits = new ArrayList<>();
+        this.splitDiscoveryFinished = true;
     }
 
     public OceanBaseEnumeratorState(
             List<OceanBaseSplit> inFlightSplits, List<OceanBaseSplit> pendingSplits) {
+        this(inFlightSplits, pendingSplits, true);
+    }
+
+    public OceanBaseEnumeratorState(
+            List<OceanBaseSplit> inFlightSplits,
+            List<OceanBaseSplit> pendingSplits,
+            boolean splitDiscoveryFinished) {
         this.inFlightSplits = inFlightSplits;
         this.pendingSplits = pendingSplits;
+        this.splitDiscoveryFinished = splitDiscoveryFinished;
     }
 
     public List<OceanBaseSplit> getInFlightSplits() {
@@ -47,5 +58,9 @@ public class OceanBaseEnumeratorState implements Serializable {
 
     public List<OceanBaseSplit> getPendingSplits() {
         return pendingSplits;
+    }
+
+    public boolean isSplitDiscoveryFinished() {
+        return splitDiscoveryFinished;
     }
 }
