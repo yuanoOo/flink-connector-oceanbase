@@ -49,8 +49,9 @@ import java.util.concurrent.TimeUnit;
  *
  * <p>Split discovery runs asynchronously on a background thread. Splits are added to the pending
  * queue incrementally as they are calculated, allowing readers to start processing data before all
- * splits have been discovered. This is especially beneficial for tables with non-numeric primary
- * keys (e.g., VARCHAR), where each split point requires an expensive ORDER BY + OFFSET query.
+ * splits have been discovered. For non-numeric primary keys (e.g., VARCHAR), split boundaries are
+ * calculated using an iterative next-chunk-max approach that avoids deep pagination: each query
+ * starts from the last known boundary and scans only {@code splitSize} rows forward.
  */
 public class OceanBaseSplitEnumerator
         implements SplitEnumerator<OceanBaseSplit, OceanBaseEnumeratorState> {
@@ -255,32 +256,33 @@ public class OceanBaseSplitEnumerator
             return;
         }
 
-        long rowCount = getRowCountCached();
-        int numSplits = Math.max(1, (int) Math.ceil((double) rowCount / config.getSplitSize()));
-
-        if (numSplits <= 1) {
-            addSplitToPending(
-                    new OceanBaseSplit(
-                            "0",
-                            config.getSchemaName(),
-                            config.getTableName(),
-                            splitColumn,
-                            null,
-                            null));
-            return;
-        }
-
         // For numeric types, calculate all split points at once (no DB queries needed)
         if (isNumericSplittable(min, max)) {
+            long rowCount = getRowCountCached();
+            int numSplits = Math.max(1, (int) Math.ceil((double) rowCount / config.getSplitSize()));
+
+            if (numSplits <= 1) {
+                addSplitToPending(
+                        new OceanBaseSplit(
+                                "0",
+                                config.getSchemaName(),
+                                config.getTableName(),
+                                splitColumn,
+                                null,
+                                null));
+                return;
+            }
+
             List<Object> splitPoints = generateNumericSplitPoints(min, max, numSplits);
             addAllSplitsFromPoints(splitColumn, splitPoints);
             return;
         }
 
-        // For non-numeric types (String, Date, etc.), calculate split points incrementally.
-        // Each point requires an ORDER BY + OFFSET query, so we add splits as we go,
-        // allowing readers to start reading before all points are calculated.
-        generateSplitsIncrementally(splitColumn, numSplits, rowCount);
+        // For non-numeric types (String, Date, etc.), use iterative next-chunk-max approach.
+        // Each query starts from the last boundary and scans only chunkSize rows forward,
+        // avoiding the deep pagination problem of LIMIT/OFFSET.
+        // Splits are emitted incrementally so readers can start before all points are found.
+        generateSplitsIncrementally(splitColumn, min, max);
     }
 
     private boolean isNumericSplittable(Object min, Object max) {
@@ -289,61 +291,67 @@ public class OceanBaseSplitEnumerator
                 || (min instanceof Number && max instanceof Number);
     }
 
-    private void generateSplitsIncrementally(String splitColumn, int numSplits, long rowCount) {
-        List<Object> allPoints = new ArrayList<>();
-        allPoints.add(null); // First boundary is always null (open start)
-
+    /**
+     * Generates splits incrementally using the next-chunk-max approach (inspired by flink-cdc).
+     *
+     * <p>Instead of using LIMIT/OFFSET which suffers from deep pagination (MySQL scans N rows for
+     * OFFSET N), this method iteratively queries: {@code SELECT MAX(col) FROM (SELECT col FROM
+     * table WHERE col >= ? ORDER BY col LIMIT chunkSize) AS T}
+     *
+     * <p>Each query always starts from the last known boundary and only scans {@code chunkSize}
+     * rows forward, so performance is O(chunkSize) per query regardless of table position.
+     */
+    private void generateSplitsIncrementally(String splitColumn, Object min, Object max) {
         int splitIndex = 0;
-        for (int i = 1; i < numSplits; i++) {
-            long offset = Math.max(0L, Math.round((double) rowCount * i / numSplits));
-            if (offset <= 0 || offset >= rowCount) {
-                continue;
+        Object chunkStart = null; // null = open lower bound (first split)
+        Object currentLowerBound = min;
+        int chunkSize = config.getSplitSize();
+
+        while (currentLowerBound != null) {
+            Object nextBound = queryNextChunkMax(splitColumn, chunkSize, currentLowerBound);
+
+            if (nextBound == null) {
+                break;
             }
 
-            Object point = querySplitPointByOffset(splitColumn, offset);
-            if (point == null) {
-                continue;
-            }
-
-            // Skip duplicate split points
-            if (!allPoints.isEmpty()) {
-                Object lastPoint = allPoints.get(allPoints.size() - 1);
-                if (point.equals(lastPoint)) {
-                    continue;
+            // Handle duplicate boundaries: many rows share the same split column value
+            if (nextBound.equals(currentLowerBound)) {
+                nextBound = queryMinGreaterThan(splitColumn, currentLowerBound);
+                if (nextBound == null) {
+                    // currentLowerBound is the max value, no more distinct values
+                    break;
                 }
             }
 
-            allPoints.add(point);
-
-            // Emit split for the range [previous_point, current_point)
-            Object prevPoint = allPoints.get(allPoints.size() - 2);
+            // Emit split [chunkStart, nextBound)
             addSplitToPending(
                     new OceanBaseSplit(
                             String.valueOf(splitIndex++),
                             config.getSchemaName(),
                             config.getTableName(),
                             splitColumn,
-                            prevPoint,
-                            point));
+                            chunkStart,
+                            nextBound));
 
             LOG.debug(
-                    "Discovered split {} for table {}.{} ({}/{})",
+                    "Discovered split {} for table {}.{} boundary={}",
                     splitIndex,
                     config.getSchemaName(),
                     config.getTableName(),
-                    i,
-                    numSplits);
+                    nextBound);
+
+            chunkStart = nextBound;
+            currentLowerBound = nextBound;
         }
 
-        // Final split: [last_point, null) — covers remaining rows
-        Object lastPoint = allPoints.get(allPoints.size() - 1);
+        // Final split: [chunkStart, null) — covers remaining rows
         addSplitToPending(
                 new OceanBaseSplit(
                         String.valueOf(splitIndex),
                         config.getSchemaName(),
                         config.getTableName(),
                         splitColumn,
-                        lastPoint,
+                        chunkStart,
                         null));
     }
 
@@ -514,7 +522,18 @@ public class OceanBaseSplitEnumerator
         return generateNumericSplitPoints(min, max, numSplits);
     }
 
-    private Object querySplitPointByOffset(String splitColumn, long offset) {
+    /**
+     * Queries the maximum value of the next chunk starting from {@code includedLowerBound}.
+     *
+     * <p>For MySQL: {@code SELECT MAX(col) FROM (SELECT col FROM table WHERE col >= ? ORDER BY col
+     * ASC LIMIT ?) AS T}
+     *
+     * <p>For Oracle: uses ROWNUM-based subquery instead of LIMIT.
+     *
+     * <p>Each query scans at most {@code chunkSize} rows, avoiding the deep pagination problem of
+     * LIMIT/OFFSET.
+     */
+    private Object queryNextChunkMax(String splitColumn, int chunkSize, Object includedLowerBound) {
         String quotedSplitColumn = quoteIdentifier(splitColumn);
         String quotedTable =
                 quoteIdentifier(config.getSchemaName())
@@ -524,33 +543,34 @@ public class OceanBaseSplitEnumerator
         String sql;
         if (config.isOracleMode()) {
             sql =
-                    "SELECT val FROM (SELECT val, ROWNUM rn FROM (SELECT "
+                    "SELECT MAX(val) FROM (SELECT val FROM (SELECT "
                             + quotedSplitColumn
                             + " AS val FROM "
                             + quotedTable
-                            + " ORDER BY "
+                            + " WHERE "
                             + quotedSplitColumn
-                            + ") WHERE ROWNUM <= ?) WHERE rn = ?";
+                            + " >= ? ORDER BY "
+                            + quotedSplitColumn
+                            + ") WHERE ROWNUM <= ?)";
         } else {
             sql =
-                    "SELECT "
+                    "SELECT MAX("
+                            + quotedSplitColumn
+                            + ") FROM (SELECT "
                             + quotedSplitColumn
                             + " FROM "
                             + quotedTable
-                            + " ORDER BY "
+                            + " WHERE "
                             + quotedSplitColumn
-                            + " LIMIT 1 OFFSET ?";
+                            + " >= ? ORDER BY "
+                            + quotedSplitColumn
+                            + " ASC LIMIT ?) AS T";
         }
 
         try (Connection conn = getDataSource().getConnection();
                 PreparedStatement stmt = conn.prepareStatement(sql)) {
-            long rowNumber = offset + 1;
-            if (config.isOracleMode()) {
-                stmt.setLong(1, rowNumber);
-                stmt.setLong(2, rowNumber);
-            } else {
-                stmt.setLong(1, offset);
-            }
+            stmt.setObject(1, includedLowerBound);
+            stmt.setInt(2, chunkSize);
 
             try (ResultSet rs = stmt.executeQuery()) {
                 if (rs.next()) {
@@ -558,7 +578,42 @@ public class OceanBaseSplitEnumerator
                 }
             }
         } catch (SQLException e) {
-            LOG.warn("Failed to query split boundary at offset {}", offset, e);
+            LOG.warn("Failed to query next chunk max from bound {}", includedLowerBound, e);
+        }
+        return null;
+    }
+
+    /**
+     * Queries the minimum value strictly greater than {@code excludedLowerBound}. Used to skip past
+     * duplicate boundaries when many rows share the same split column value.
+     */
+    private Object queryMinGreaterThan(String splitColumn, Object excludedLowerBound) {
+        String quotedSplitColumn = quoteIdentifier(splitColumn);
+        String quotedTable =
+                quoteIdentifier(config.getSchemaName())
+                        + "."
+                        + quoteIdentifier(config.getTableName());
+
+        String sql =
+                "SELECT MIN("
+                        + quotedSplitColumn
+                        + ") FROM "
+                        + quotedTable
+                        + " WHERE "
+                        + quotedSplitColumn
+                        + " > ?";
+
+        try (Connection conn = getDataSource().getConnection();
+                PreparedStatement stmt = conn.prepareStatement(sql)) {
+            stmt.setObject(1, excludedLowerBound);
+
+            try (ResultSet rs = stmt.executeQuery()) {
+                if (rs.next()) {
+                    return rs.getObject(1);
+                }
+            }
+        } catch (SQLException e) {
+            LOG.warn("Failed to query min greater than {}", excludedLowerBound, e);
         }
         return null;
     }
