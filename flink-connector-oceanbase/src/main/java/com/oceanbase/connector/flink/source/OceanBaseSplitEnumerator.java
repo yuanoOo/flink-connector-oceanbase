@@ -185,28 +185,12 @@ public class OceanBaseSplitEnumerator
     }
 
     private String getPrimaryKeyColumn() throws SQLException {
-        String sql;
-        if (config.isOracleMode()) {
-            sql =
-                    "SELECT cols.column_name FROM all_constraints cons "
-                            + "JOIN all_cons_columns cols ON cons.owner = cols.owner AND cons.constraint_name = cols.constraint_name "
-                            + "WHERE cons.owner = ? AND cons.table_name = ? AND cons.constraint_type = 'P'";
-        } else {
-            sql =
-                    "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE "
-                            + "WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND CONSTRAINT_NAME = 'PRIMARY' "
-                            + "ORDER BY ORDINAL_POSITION LIMIT 1";
-        }
-
-        try (Connection conn = getDataSource().getConnection();
-                PreparedStatement stmt = conn.prepareStatement(sql)) {
-
-            stmt.setString(1, config.getSchemaName());
-            stmt.setString(2, config.getTableName());
-
-            try (ResultSet rs = stmt.executeQuery()) {
+        try (Connection conn = getDataSource().getConnection()) {
+            java.sql.DatabaseMetaData metaData = conn.getMetaData();
+            try (ResultSet rs =
+                    metaData.getPrimaryKeys(null, config.getSchemaName(), config.getTableName())) {
                 if (rs.next()) {
-                    return rs.getString(1);
+                    return rs.getString("COLUMN_NAME");
                 }
             }
         }
