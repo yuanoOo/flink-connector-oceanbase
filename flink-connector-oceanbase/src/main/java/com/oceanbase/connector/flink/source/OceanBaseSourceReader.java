@@ -50,7 +50,15 @@ import java.util.Deque;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 
-/** Source reader for OceanBase parallel snapshot read. */
+/**
+ * Source reader for OceanBase parallel snapshot read.
+ *
+ * <p>All rows from a split are read into memory and emitted to downstream within a single {@link
+ * #pollNext} call. Since Flink injects checkpoint barriers only between {@code pollNext} calls, the
+ * read-and-emit of each split is atomic from the checkpoint's perspective — no checkpoint can occur
+ * mid-split. This gives the source exactly-once semantics: either the entire split's data is
+ * checkpointed, or none of it is.
+ */
 public class OceanBaseSourceReader implements SourceReader<RowData, OceanBaseSplit> {
 
     private static final Logger LOG = LoggerFactory.getLogger(OceanBaseSourceReader.class);
@@ -64,12 +72,6 @@ public class OceanBaseSourceReader implements SourceReader<RowData, OceanBaseSpl
     private volatile boolean running = true;
     private volatile boolean noMoreSplits = false;
     private volatile CompletableFuture<Void> availabilityFuture = new CompletableFuture<>();
-
-    // Cursor state for incremental reading
-    private Connection currentConnection;
-    private PreparedStatement currentStatement;
-    private ResultSet currentResultSet;
-    private int splitColumnIndex = -1;
 
     public OceanBaseSourceReader(
             SourceReaderContext context, OceanBaseSourceConfig config, DataType producedDataType) {
@@ -100,6 +102,10 @@ public class OceanBaseSourceReader implements SourceReader<RowData, OceanBaseSpl
 
     @Override
     public List<OceanBaseSplit> snapshotState(long checkpointId) {
+        // snapshotState() is called between pollNext() calls on the same thread.
+        // currentSplit is non-null only when it has been assigned but not yet processed
+        // by pollNext(). Once pollNext() processes a split (read + emit all rows),
+        // currentSplit is set to null. So any non-null split here has NOT been emitted.
         List<OceanBaseSplit> state = new ArrayList<>();
         synchronized (pendingSplits) {
             if (currentSplit != null) {
@@ -120,7 +126,6 @@ public class OceanBaseSourceReader implements SourceReader<RowData, OceanBaseSpl
     @Override
     public void close() throws Exception {
         running = false;
-        closeCurrentCursor();
         if (dataSource != null) {
             dataSource.close();
         }
@@ -145,105 +150,64 @@ public class OceanBaseSourceReader implements SourceReader<RowData, OceanBaseSpl
             return InputStatus.NOTHING_AVAILABLE;
         }
 
-        // If no cursor is open, pick the next split
-        if (currentResultSet == null) {
-            if (currentSplit == null) {
-                synchronized (pendingSplits) {
-                    currentSplit = pendingSplits.pollFirst();
-                }
+        if (currentSplit == null) {
+            synchronized (pendingSplits) {
+                currentSplit = pendingSplits.pollFirst();
             }
-
-            if (currentSplit == null) {
-                return noMoreSplits ? InputStatus.END_OF_INPUT : InputStatus.NOTHING_AVAILABLE;
-            }
-
-            // Open cursor for current split
-            openCursorForSplit(currentSplit);
         }
 
-        // Read one row from the cursor
-        try {
-            if (currentResultSet.next()) {
-                RowData row = convertToRowData(currentResultSet);
-                output.collect(row);
-                if (splitColumnIndex > 0) {
-                    currentSplit.setLastReadValue(currentResultSet.getObject(splitColumnIndex));
-                }
-                return InputStatus.MORE_AVAILABLE;
-            } else {
-                // Split exhausted
-                closeCurrentCursor();
-                currentSplit = null;
-                requestSplit();
+        if (currentSplit == null) {
+            return noMoreSplits ? InputStatus.END_OF_INPUT : InputStatus.NOTHING_AVAILABLE;
+        }
 
-                synchronized (pendingSplits) {
-                    if (!pendingSplits.isEmpty()) {
-                        return InputStatus.MORE_AVAILABLE;
-                    }
-                    return noMoreSplits ? InputStatus.END_OF_INPUT : InputStatus.NOTHING_AVAILABLE;
-                }
+        // Read ALL rows and emit ALL within this single pollNext() call.
+        // Flink injects checkpoint barriers only between pollNext() calls,
+        // so the read+emit of each split is atomic → exactly-once at source level.
+        try {
+            List<RowData> rows = bufferAllRowsFromSplit(currentSplit);
+            for (RowData row : rows) {
+                output.collect(row);
             }
         } catch (SQLException e) {
             LOG.error("Error reading split: {}", currentSplit, e);
-            closeCurrentCursor();
             throw new RuntimeException("Failed to read split: " + currentSplit.splitId(), e);
+        }
+
+        currentSplit = null;
+        requestSplit();
+
+        synchronized (pendingSplits) {
+            if (!pendingSplits.isEmpty()) {
+                return InputStatus.MORE_AVAILABLE;
+            }
+            return noMoreSplits ? InputStatus.END_OF_INPUT : InputStatus.NOTHING_AVAILABLE;
         }
     }
 
-    private void openCursorForSplit(OceanBaseSplit split) throws SQLException {
+    private List<RowData> bufferAllRowsFromSplit(OceanBaseSplit split) throws SQLException {
         List<Object> params = new ArrayList<>();
         String sql = buildQuerySQL(split, params);
-        LOG.info("Executing query for split {}: {}", split.splitId(), sql);
+        LOG.info("Buffering all rows for split {}: {}", split.splitId(), sql);
 
-        currentConnection = getDataSource().getConnection();
-        currentStatement =
-                currentConnection.prepareStatement(
-                        sql, ResultSet.TYPE_FORWARD_ONLY, ResultSet.CONCUR_READ_ONLY);
-        for (int i = 0; i < params.size(); i++) {
-            currentStatement.setObject(i + 1, params.get(i));
-        }
-        currentStatement.setFetchSize(config.getFetchSize());
-        currentResultSet = currentStatement.executeQuery();
+        List<RowData> buffer = new ArrayList<>();
+        try (Connection conn = getDataSource().getConnection();
+                PreparedStatement stmt =
+                        conn.prepareStatement(
+                                sql, ResultSet.TYPE_FORWARD_ONLY, ResultSet.CONCUR_READ_ONLY)) {
+            for (int i = 0; i < params.size(); i++) {
+                stmt.setObject(i + 1, params.get(i));
+            }
+            stmt.setFetchSize(config.getFetchSize());
 
-        // Resolve split column index for tracking lastReadValue
-        splitColumnIndex = -1;
-        if (split.getSplitColumn() != null) {
-            java.sql.ResultSetMetaData meta = currentResultSet.getMetaData();
-            for (int i = 1; i <= meta.getColumnCount(); i++) {
-                if (split.getSplitColumn().equalsIgnoreCase(meta.getColumnName(i))) {
-                    splitColumnIndex = i;
-                    break;
+            try (ResultSet rs = stmt.executeQuery()) {
+                while (rs.next()) {
+                    buffer.add(convertToRowData(rs));
                 }
             }
         }
-    }
 
-    private void closeCurrentCursor() {
-        splitColumnIndex = -1;
-        if (currentResultSet != null) {
-            try {
-                currentResultSet.close();
-            } catch (SQLException e) {
-                LOG.warn("Failed to close ResultSet", e);
-            }
-            currentResultSet = null;
-        }
-        if (currentStatement != null) {
-            try {
-                currentStatement.close();
-            } catch (SQLException e) {
-                LOG.warn("Failed to close PreparedStatement", e);
-            }
-            currentStatement = null;
-        }
-        if (currentConnection != null) {
-            try {
-                currentConnection.close();
-            } catch (SQLException e) {
-                LOG.warn("Failed to close Connection", e);
-            }
-            currentConnection = null;
-        }
+        LOG.info("Buffered {} rows for split {}", buffer.size(), split.splitId());
+        return buffer;
     }
 
     private void requestSplit() {
@@ -385,15 +349,7 @@ public class OceanBaseSourceReader implements SourceReader<RowData, OceanBaseSpl
         if (splitColumn != null) {
             String quotedColumn = config.quoteIdentifier(splitColumn);
 
-            // Determine effective start: use lastReadValue for checkpoint recovery
-            Object effectiveStart =
-                    split.getLastReadValue() != null
-                            ? split.getLastReadValue()
-                            : split.getSplitStart();
-            // Use strict '>' when resuming from lastReadValue, '>=' otherwise
-            String startOp = split.getLastReadValue() != null ? " > ?" : " >= ?";
-
-            boolean hasStart = effectiveStart != null;
+            boolean hasStart = split.getSplitStart() != null;
             boolean hasEnd = split.getSplitEnd() != null;
 
             if (!hasStart && !hasEnd) {
@@ -404,15 +360,15 @@ public class OceanBaseSourceReader implements SourceReader<RowData, OceanBaseSpl
             sql.append(" WHERE ");
             if (hasStart && hasEnd) {
                 sql.append(quotedColumn)
-                        .append(startOp)
+                        .append(" >= ?")
                         .append(" AND ")
                         .append(quotedColumn)
                         .append(" < ?");
-                params.add(effectiveStart);
+                params.add(split.getSplitStart());
                 params.add(split.getSplitEnd());
             } else if (hasStart) {
-                sql.append(quotedColumn).append(startOp);
-                params.add(effectiveStart);
+                sql.append(quotedColumn).append(" >= ?");
+                params.add(split.getSplitStart());
             } else {
                 sql.append(quotedColumn).append(" < ?");
                 params.add(split.getSplitEnd());

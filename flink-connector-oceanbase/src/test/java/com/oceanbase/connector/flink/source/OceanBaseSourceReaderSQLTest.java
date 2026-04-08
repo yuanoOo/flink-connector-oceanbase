@@ -238,36 +238,15 @@ public class OceanBaseSourceReaderSQLTest {
     }
 
     @Test
-    public void testResumeFromLastReadValue() {
+    public void testLastReadValueIgnoredWithBufferApproach() {
+        // With buffer-all-before-emit, lastReadValue is ignored.
+        // On recovery, splits are re-read from their original bounds.
         OceanBaseSourceReader reader = createMySQLReader();
         OceanBaseSplit split = new OceanBaseSplit("1", "test_db", "products", "id", 50, 100);
         split.setLastReadValue(75);
-        // Should use '>' (strict) and lastReadValue instead of splitStart
         assertEquals(
-                "SELECT * FROM `test_db`.`products` WHERE `id` > ? AND `id` < ? ORDER BY `id` ASC",
+                "SELECT * FROM `test_db`.`products` WHERE `id` >= ? AND `id` < ? ORDER BY `id` ASC",
                 reader.buildQueryForTest(split));
-        assertArrayEquals(new String[] {"75", "100"}, reader.buildQueryParamsForTest(split));
-    }
-
-    @Test
-    public void testResumeFromLastReadValueLastSplit() {
-        OceanBaseSourceReader reader = createMySQLReader();
-        OceanBaseSplit split = new OceanBaseSplit("2", "test_db", "products", "id", 100, null);
-        split.setLastReadValue(150);
-        assertEquals(
-                "SELECT * FROM `test_db`.`products` WHERE `id` > ? ORDER BY `id` ASC",
-                reader.buildQueryForTest(split));
-        assertArrayEquals(new String[] {"150"}, reader.buildQueryParamsForTest(split));
-    }
-
-    @Test
-    public void testResumeFromLastReadValueFirstSplit() {
-        OceanBaseSourceReader reader = createMySQLReader();
-        OceanBaseSplit split = new OceanBaseSplit("0", "test_db", "products", "id", null, 50);
-        split.setLastReadValue(25);
-        assertEquals(
-                "SELECT * FROM `test_db`.`products` WHERE `id` > ? AND `id` < ? ORDER BY `id` ASC",
-                reader.buildQueryForTest(split));
-        assertArrayEquals(new String[] {"25", "50"}, reader.buildQueryParamsForTest(split));
+        assertArrayEquals(new String[] {"50", "100"}, reader.buildQueryParamsForTest(split));
     }
 }
