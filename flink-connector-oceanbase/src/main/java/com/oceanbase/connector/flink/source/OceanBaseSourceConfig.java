@@ -146,6 +146,20 @@ public class OceanBaseSourceConfig implements Serializable {
         return driverClassName;
     }
 
+    public static final String HIDDEN_PK_INCREMENT = "__pk_increment";
+
+    /** Returns true if the given split column is OceanBase's hidden auto-increment PK. */
+    public boolean isHiddenPkColumn(String splitColumn) {
+        return HIDDEN_PK_INCREMENT.equals(splitColumn);
+    }
+
+    /** Returns the SQL hint to make hidden columns visible, or empty string if not needed. */
+    public String getHiddenColumnHint(String splitColumn) {
+        return isHiddenPkColumn(splitColumn)
+                ? "/*+ opt_param('hidden_column_visible', 'true') */ "
+                : "";
+    }
+
     public String quoteIdentifier(String identifier) {
         if (isOracleMode()) {
             if (oracleTenantCaseInsensitive) {

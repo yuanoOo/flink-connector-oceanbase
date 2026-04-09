@@ -98,6 +98,14 @@ public class OceanBaseParallelSourceE2eITCase extends FlinkContainerTestEnvironm
         super.after();
 
         dropTables("source_products", "target_products");
+
+        // Clean up no-PK tables if they exist
+        try (Connection conn =
+                        DriverManager.getConnection(getJdbcUrl(), getUsername(), getPassword());
+                Statement stmt = conn.createStatement()) {
+            stmt.execute("DROP TABLE IF EXISTS source_no_pk");
+            stmt.execute("DROP TABLE IF EXISTS target_no_pk");
+        }
     }
 
     @Test
@@ -168,6 +176,81 @@ public class OceanBaseParallelSourceE2eITCase extends FlinkContainerTestEnvironm
         waitingAndAssertTableCount("target_products", expected.size());
 
         List<String> actual = queryTable("target_products");
+        assertEqualsInAnyOrder(expected, actual);
+    }
+
+    @Test
+    public void testParallelSourceNoPrimaryKey() throws Exception {
+        // Create no-PK source table with test data
+        try (Connection conn =
+                        DriverManager.getConnection(getJdbcUrl(), getUsername(), getPassword());
+                Statement stmt = conn.createStatement()) {
+            stmt.execute(
+                    "CREATE TABLE IF NOT EXISTS source_no_pk ("
+                            + "name VARCHAR(255), "
+                            + "value INT)");
+            stmt.execute(
+                    "INSERT INTO source_no_pk VALUES "
+                            + "('a', 1), ('b', 2), ('c', 3), ('d', 4), ('e', 5),"
+                            + "('f', 6), ('g', 7), ('h', 8), ('i', 9), ('j', 10)");
+
+            stmt.execute(
+                    "CREATE TABLE IF NOT EXISTS target_no_pk ("
+                            + "name VARCHAR(255), "
+                            + "value INT)");
+        }
+
+        List<String> sqlLines = new ArrayList<>();
+
+        sqlLines.add("SET 'execution.checkpointing.interval' = '3s';");
+        sqlLines.add("SET 'parallelism.default' = '4';");
+
+        // Source table without PK — connector should auto-detect __pk_increment
+        sqlLines.add(
+                String.format(
+                        "CREATE TEMPORARY TABLE source_table ("
+                                + " name STRING,"
+                                + " value INT"
+                                + ") with ("
+                                + "  'connector'='oceanbase',"
+                                + "  'url'='%s',"
+                                + "  'username'='%s',"
+                                + "  'password'='%s',"
+                                + "  'schema-name'='%s',"
+                                + "  'table-name'='source_no_pk',"
+                                + "  'compatible-mode'='MySQL',"
+                                + "  'split-size'='3'"
+                                + ");",
+                        getJdbcUrl(), getUsername(), getPassword(), getSchemaName()));
+
+        // Sink table
+        sqlLines.add(
+                String.format(
+                        "CREATE TEMPORARY TABLE target_table ("
+                                + " name STRING,"
+                                + " value INT"
+                                + ") with ("
+                                + "  'connector'='oceanbase',"
+                                + "  'url'='%s',"
+                                + "  'username'='%s',"
+                                + "  'password'='%s',"
+                                + "  'schema-name'='%s',"
+                                + "  'table-name'='target_no_pk'"
+                                + ");",
+                        getJdbcUrl(), getUsername(), getPassword(), getSchemaName()));
+
+        sqlLines.add("INSERT INTO target_table SELECT * FROM source_table;");
+
+        submitSQLJob(
+                sqlLines, getResource(SOURCE_CONNECTOR_NAME), getResource(SINK_CONNECTOR_NAME));
+
+        List<String> expected =
+                Arrays.asList(
+                        "a,1", "b,2", "c,3", "d,4", "e,5", "f,6", "g,7", "h,8", "i,9", "j,10");
+
+        waitingAndAssertTableCount("target_no_pk", expected.size());
+
+        List<String> actual = queryTable("target_no_pk");
         assertEqualsInAnyOrder(expected, actual);
     }
 

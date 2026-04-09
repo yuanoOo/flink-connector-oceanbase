@@ -46,6 +46,54 @@ public class OceanBaseMySQLSourceITCase extends OceanBaseMySQLTestBase {
     }
 
     @Test
+    public void testSourceNoPrimaryKeyTable() throws Exception {
+        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+        env.setParallelism(1);
+        StreamTableEnvironment tEnv =
+                StreamTableEnvironment.create(
+                        env, EnvironmentSettings.newInstance().inStreamingMode().build());
+
+        initialize("sql/mysql/no_pk_source.sql");
+
+        // Create source table — no PK, connector should auto-detect __pk_increment
+        tEnv.executeSql(
+                "CREATE TEMPORARY TABLE source_table ("
+                        + " name STRING,"
+                        + " value INT"
+                        + ") with ("
+                        + "  'connector'='oceanbase',"
+                        + "  'table-name'='no_pk_source',"
+                        + "  'compatible-mode'='MySQL',"
+                        + "  'split-size'='3',"
+                        + getOptionsString()
+                        + ");");
+
+        // Create sink table
+        tEnv.executeSql(
+                "CREATE TEMPORARY TABLE sink_table ("
+                        + " name STRING,"
+                        + " value INT"
+                        + ") with ("
+                        + "  'connector'='oceanbase',"
+                        + "  'table-name'='no_pk_sink',"
+                        + getOptionsString()
+                        + ");");
+
+        tEnv.executeSql("INSERT INTO sink_table SELECT * FROM source_table").await();
+
+        waitingAndAssertTableCount("no_pk_sink", 10);
+
+        List<String> expected =
+                Arrays.asList(
+                        "a,1", "b,2", "c,3", "d,4", "e,5", "f,6", "g,7", "h,8", "i,9", "j,10");
+
+        List<String> actual = queryTable("no_pk_sink");
+        assertEqualsInAnyOrder(expected, actual);
+
+        dropTables("no_pk_source", "no_pk_sink");
+    }
+
+    @Test
     public void testSourceAllTypes() throws Exception {
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
         env.setParallelism(1);

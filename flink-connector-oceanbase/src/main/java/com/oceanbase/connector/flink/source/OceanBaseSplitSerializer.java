@@ -48,7 +48,6 @@ public class OceanBaseSplitSerializer implements SimpleVersionedSerializer<Ocean
             writeString(out, split.getSplitColumn());
             writeObject(out, split.getSplitStart());
             writeObject(out, split.getSplitEnd());
-            writeObject(out, split.getLastReadValue());
 
             return baos.toByteArray();
         }
@@ -66,13 +65,13 @@ public class OceanBaseSplitSerializer implements SimpleVersionedSerializer<Ocean
             Object splitStart = readObject(in);
             Object splitEnd = readObject(in);
 
-            OceanBaseSplit split =
-                    new OceanBaseSplit(
-                            splitId, schemaName, tableName, splitColumn, splitStart, splitEnd);
-            if (version >= 3) {
-                split.setLastReadValue(readObject(in));
+            // v3 wrote lastReadValue here; skip it for backward compatibility
+            if (version >= 3 && in.available() > 0) {
+                readObject(in); // discard lastReadValue
             }
-            return split;
+
+            return new OceanBaseSplit(
+                    splitId, schemaName, tableName, splitColumn, splitStart, splitEnd);
         }
     }
 

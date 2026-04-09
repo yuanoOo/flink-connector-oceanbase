@@ -189,6 +189,61 @@ public class OceanBaseSourceReaderSQLTest {
     }
 
     @Test
+    public void testHiddenPkQueryWithHint() {
+        OceanBaseSourceReader reader = createMySQLReader();
+        OceanBaseSplit split =
+                new OceanBaseSplit("0", "test_db", "products", "__pk_increment", null, null);
+        assertEquals(
+                "SELECT /*+ opt_param('hidden_column_visible', 'true') */ * FROM `test_db`.`products` ORDER BY `__pk_increment` ASC",
+                reader.buildQueryForTest(split));
+        assertEquals(0, reader.buildQueryParamsForTest(split).length);
+    }
+
+    @Test
+    public void testHiddenPkQueryBothBounds() {
+        OceanBaseSourceReader reader = createMySQLReader();
+        OceanBaseSplit split =
+                new OceanBaseSplit("1", "test_db", "products", "__pk_increment", 100L, 200L);
+        assertEquals(
+                "SELECT /*+ opt_param('hidden_column_visible', 'true') */ * FROM `test_db`.`products` WHERE `__pk_increment` >= ? AND `__pk_increment` < ? ORDER BY `__pk_increment` ASC",
+                reader.buildQueryForTest(split));
+        assertArrayEquals(new String[] {"100", "200"}, reader.buildQueryParamsForTest(split));
+    }
+
+    @Test
+    public void testNormalColumnQueryNoHint() {
+        OceanBaseSourceReader reader = createMySQLReader();
+        OceanBaseSplit split = new OceanBaseSplit("1", "test_db", "products", "id", 50, 100);
+        String sql = reader.buildQueryForTest(split);
+        assertEquals(
+                "SELECT * FROM `test_db`.`products` WHERE `id` >= ? AND `id` < ? ORDER BY `id` ASC",
+                sql);
+        // Verify no hint present for normal columns
+        assertEquals(-1, sql.indexOf("opt_param"));
+    }
+
+    @Test
+    public void testHiddenColumnHintConfig() {
+        OceanBaseSourceConfig config =
+                new OceanBaseSourceConfig(
+                        "jdbc:oceanbase://127.0.0.1:2881/test",
+                        "user",
+                        "pwd",
+                        "db",
+                        "t",
+                        "MySQL",
+                        8192,
+                        null,
+                        1024);
+        assertEquals(
+                "/*+ opt_param('hidden_column_visible', 'true') */ ",
+                config.getHiddenColumnHint("__pk_increment"));
+        assertEquals("", config.getHiddenColumnHint("id"));
+        assertEquals("", config.getHiddenColumnHint("name"));
+        assertEquals("", config.getHiddenColumnHint(null));
+    }
+
+    @Test
     public void testQuoteIdentifierEscapesSpecialCharacters() {
         OceanBaseSourceConfig mysqlConfig =
                 new OceanBaseSourceConfig(
@@ -235,18 +290,5 @@ public class OceanBaseSourceReaderSQLTest {
                         null);
         assertEquals("\"col\"\"name\"", oracleCaseSensitiveConfig.quoteIdentifier("col\"name"));
         assertEquals("\"normal\"", oracleCaseSensitiveConfig.quoteIdentifier("normal"));
-    }
-
-    @Test
-    public void testLastReadValueIgnoredWithBufferApproach() {
-        // With buffer-all-before-emit, lastReadValue is ignored.
-        // On recovery, splits are re-read from their original bounds.
-        OceanBaseSourceReader reader = createMySQLReader();
-        OceanBaseSplit split = new OceanBaseSplit("1", "test_db", "products", "id", 50, 100);
-        split.setLastReadValue(75);
-        assertEquals(
-                "SELECT * FROM `test_db`.`products` WHERE `id` >= ? AND `id` < ? ORDER BY `id` ASC",
-                reader.buildQueryForTest(split));
-        assertArrayEquals(new String[] {"50", "100"}, reader.buildQueryParamsForTest(split));
     }
 }

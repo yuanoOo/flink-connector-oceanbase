@@ -116,26 +116,25 @@ public class OceanBaseSplitSerializerTest {
     }
 
     @Test
-    public void testSerializeDeserializeWithLastReadValue() throws IOException {
+    public void testBackwardCompatibilityV3WithLastReadValue() throws IOException {
+        // Simulate v3 serialized data that includes lastReadValue
         OceanBaseSplit split = new OceanBaseSplit("1", "schema", "table", "id", 10L, 20L);
-        split.setLastReadValue(15L);
+        java.io.ByteArrayOutputStream baos = new java.io.ByteArrayOutputStream();
+        java.io.DataOutputStream out = new java.io.DataOutputStream(baos);
+        writeStringHelper(out, split.splitId());
+        writeStringHelper(out, split.getSchemaName());
+        writeStringHelper(out, split.getTableName());
+        writeStringHelper(out, split.getSplitColumn());
+        writeObjectHelper(out, split.getSplitStart());
+        writeObjectHelper(out, split.getSplitEnd());
+        writeObjectHelper(out, 15L); // lastReadValue from old v3 format
+        byte[] v3Bytes = baos.toByteArray();
+
         OceanBaseSplitSerializer serializer = new OceanBaseSplitSerializer();
-        OceanBaseSplit restored =
-                serializer.deserialize(serializer.getVersion(), serializer.serialize(split));
-
-        assertEquals(split.getSplitStart(), restored.getSplitStart());
-        assertEquals(split.getSplitEnd(), restored.getSplitEnd());
-        assertEquals(15L, restored.getLastReadValue());
-    }
-
-    @Test
-    public void testSerializeDeserializeWithNullLastReadValue() throws IOException {
-        OceanBaseSplit split = new OceanBaseSplit("1", "schema", "table", "id", 10L, 20L);
-        OceanBaseSplitSerializer serializer = new OceanBaseSplitSerializer();
-        OceanBaseSplit restored =
-                serializer.deserialize(serializer.getVersion(), serializer.serialize(split));
-
-        assertNull(restored.getLastReadValue());
+        OceanBaseSplit restored = serializer.deserialize(3, v3Bytes);
+        assertEquals("1", restored.splitId());
+        assertEquals(10L, restored.getSplitStart());
+        assertEquals(20L, restored.getSplitEnd());
     }
 
     @Test
@@ -159,7 +158,6 @@ public class OceanBaseSplitSerializerTest {
         assertEquals("0", restored.splitId());
         assertEquals(10L, restored.getSplitStart());
         assertEquals(20L, restored.getSplitEnd());
-        assertNull(restored.getLastReadValue());
     }
 
     private void writeStringHelper(java.io.DataOutputStream out, String value) throws IOException {

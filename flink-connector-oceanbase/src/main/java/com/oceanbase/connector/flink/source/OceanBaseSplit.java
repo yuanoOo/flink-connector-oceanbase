@@ -31,7 +31,6 @@ public class OceanBaseSplit implements SourceSplit, Serializable {
     private final String splitColumn;
     private final Object splitStart;
     private final Object splitEnd;
-    private Object lastReadValue;
 
     public OceanBaseSplit(
             String splitId,
@@ -81,14 +80,6 @@ public class OceanBaseSplit implements SourceSplit, Serializable {
         return splitEnd == null;
     }
 
-    public Object getLastReadValue() {
-        return lastReadValue;
-    }
-
-    public void setLastReadValue(Object lastReadValue) {
-        this.lastReadValue = lastReadValue;
-    }
-
     @Override
     public String toString() {
         return "OceanBaseSplit{"
@@ -108,8 +99,6 @@ public class OceanBaseSplit implements SourceSplit, Serializable {
                 + splitStart
                 + ", splitEnd="
                 + splitEnd
-                + ", lastReadValue="
-                + lastReadValue
                 + '}';
     }
 }

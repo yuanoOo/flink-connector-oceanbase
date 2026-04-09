@@ -287,7 +287,6 @@ public class OceanBaseSplitEnumerator
 
     private boolean isNumericSplittable(Object min, Object max) {
         return (min instanceof BigDecimal && max instanceof BigDecimal)
-                || (min instanceof Long || min instanceof Integer)
                 || (min instanceof Number && max instanceof Number);
     }
 
@@ -379,18 +378,15 @@ public class OceanBaseSplitEnumerator
     }
 
     private void addAllSplitsFromPoints(String splitColumn, List<Object> splitPoints) {
-        synchronized (pendingSplits) {
-            for (int i = 0; i < splitPoints.size() - 1; i++) {
-                pendingSplits.addLast(
-                        new OceanBaseSplit(
-                                String.valueOf(i),
-                                config.getSchemaName(),
-                                config.getTableName(),
-                                splitColumn,
-                                splitPoints.get(i),
-                                splitPoints.get(i + 1)));
-            }
-            dedupePendingSplits();
+        for (int i = 0; i < splitPoints.size() - 1; i++) {
+            addSplitToPending(
+                    new OceanBaseSplit(
+                            String.valueOf(i),
+                            config.getSchemaName(),
+                            config.getTableName(),
+                            splitColumn,
+                            splitPoints.get(i),
+                            splitPoints.get(i + 1)));
         }
     }
 
@@ -411,7 +407,16 @@ public class OceanBaseSplitEnumerator
         if (config.isOracleMode()) {
             return "ROWID";
         } else {
-            return getPrimaryKeyColumn();
+            String pk = getPrimaryKeyColumn();
+            if (pk != null) {
+                return pk;
+            }
+            LOG.info(
+                    "No primary key found for table {}.{}, using hidden column {}",
+                    config.getSchemaName(),
+                    config.getTableName(),
+                    OceanBaseSourceConfig.HIDDEN_PK_INCREMENT);
+            return OceanBaseSourceConfig.HIDDEN_PK_INCREMENT;
         }
     }
 
@@ -426,16 +431,14 @@ public class OceanBaseSplitEnumerator
             }
         }
 
-        LOG.warn(
-                "No primary key found for table {}.{}, will use single split",
-                config.getSchemaName(),
-                config.getTableName());
         return null;
     }
 
     private Object[] getMinMax(String splitColumn) throws SQLException {
+        String hint = config.getHiddenColumnHint(splitColumn);
         StringBuilder sql = new StringBuilder();
-        sql.append("SELECT MIN(").append(quoteIdentifier(splitColumn)).append("), ");
+        sql.append("SELECT ").append(hint);
+        sql.append("MIN(").append(quoteIdentifier(splitColumn)).append("), ");
         sql.append("MAX(").append(quoteIdentifier(splitColumn)).append(") FROM ");
         sql.append(quoteIdentifier(config.getSchemaName())).append(".");
         sql.append(quoteIdentifier(config.getTableName()));
@@ -539,11 +542,14 @@ public class OceanBaseSplitEnumerator
                 quoteIdentifier(config.getSchemaName())
                         + "."
                         + quoteIdentifier(config.getTableName());
+        String hint = config.getHiddenColumnHint(splitColumn);
 
         String sql;
         if (config.isOracleMode()) {
             sql =
-                    "SELECT MAX(val) FROM (SELECT val FROM (SELECT "
+                    "SELECT "
+                            + hint
+                            + "MAX(val) FROM (SELECT val FROM (SELECT "
                             + quotedSplitColumn
                             + " AS val FROM "
                             + quotedTable
@@ -554,7 +560,9 @@ public class OceanBaseSplitEnumerator
                             + ") WHERE ROWNUM <= ?)";
         } else {
             sql =
-                    "SELECT MAX("
+                    "SELECT "
+                            + hint
+                            + "MAX("
                             + quotedSplitColumn
                             + ") FROM (SELECT "
                             + quotedSplitColumn
@@ -578,7 +586,8 @@ public class OceanBaseSplitEnumerator
                 }
             }
         } catch (SQLException e) {
-            LOG.warn("Failed to query next chunk max from bound {}", includedLowerBound, e);
+            throw new RuntimeException(
+                    "Failed to query next chunk max from bound " + includedLowerBound, e);
         }
         return null;
     }
@@ -594,8 +603,11 @@ public class OceanBaseSplitEnumerator
                         + "."
                         + quoteIdentifier(config.getTableName());
 
+        String hint = config.getHiddenColumnHint(splitColumn);
         String sql =
-                "SELECT MIN("
+                "SELECT "
+                        + hint
+                        + "MIN("
                         + quotedSplitColumn
                         + ") FROM "
                         + quotedTable
@@ -613,7 +625,7 @@ public class OceanBaseSplitEnumerator
                 }
             }
         } catch (SQLException e) {
-            LOG.warn("Failed to query min greater than {}", excludedLowerBound, e);
+            throw new RuntimeException("Failed to query min greater than " + excludedLowerBound, e);
         }
         return null;
     }
@@ -683,19 +695,7 @@ public class OceanBaseSplitEnumerator
         LinkedHashSet<String> seen = new LinkedHashSet<>();
         ArrayDeque<OceanBaseSplit> deduped = new ArrayDeque<>();
         for (OceanBaseSplit split : pendingSplits) {
-            String key =
-                    split.getSchemaName()
-                            + "."
-                            + split.getTableName()
-                            + "#"
-                            + split.getSplitColumn()
-                            + "#"
-                            + split.splitId()
-                            + "#"
-                            + split.getSplitStart()
-                            + "#"
-                            + split.getSplitEnd();
-            if (seen.add(key)) {
+            if (seen.add(splitBoundaryKey(split))) {
                 deduped.add(split);
             }
         }

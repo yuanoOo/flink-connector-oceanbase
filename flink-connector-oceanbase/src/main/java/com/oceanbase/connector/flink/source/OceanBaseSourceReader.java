@@ -339,8 +339,9 @@ public class OceanBaseSourceReader implements SourceReader<RowData, OceanBaseSpl
     }
 
     private String buildQuerySQL(OceanBaseSplit split, List<Object> params) {
+        String hint = config.getHiddenColumnHint(split.getSplitColumn());
         StringBuilder sql = new StringBuilder();
-        sql.append("SELECT * FROM ");
+        sql.append("SELECT ").append(hint).append("* FROM ");
         sql.append(config.quoteIdentifier(split.getSchemaName()))
                 .append(".")
                 .append(config.quoteIdentifier(split.getTableName()));
