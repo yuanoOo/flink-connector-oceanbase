@@ -210,7 +210,7 @@ public class OceanBaseParallelSourceE2eITCase extends FlinkContainerTestEnvironm
                 String.format(
                         "CREATE TEMPORARY TABLE source_table ("
                                 + " name STRING,"
-                                + " value INT"
+                                + " `value` INT"
                                 + ") with ("
                                 + "  'connector'='oceanbase',"
                                 + "  'url'='%s',"
@@ -228,7 +228,7 @@ public class OceanBaseParallelSourceE2eITCase extends FlinkContainerTestEnvironm
                 String.format(
                         "CREATE TEMPORARY TABLE target_table ("
                                 + " name STRING,"
-                                + " value INT"
+                                + " `value` INT"
                                 + ") with ("
                                 + "  'connector'='oceanbase',"
                                 + "  'url'='%s',"

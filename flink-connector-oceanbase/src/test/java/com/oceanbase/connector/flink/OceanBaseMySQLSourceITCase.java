@@ -59,7 +59,7 @@ public class OceanBaseMySQLSourceITCase extends OceanBaseMySQLTestBase {
         tEnv.executeSql(
                 "CREATE TEMPORARY TABLE source_table ("
                         + " name STRING,"
-                        + " value INT"
+                        + " `value` INT"
                         + ") with ("
                         + "  'connector'='oceanbase',"
                         + "  'table-name'='no_pk_source',"
@@ -72,7 +72,7 @@ public class OceanBaseMySQLSourceITCase extends OceanBaseMySQLTestBase {
         tEnv.executeSql(
                 "CREATE TEMPORARY TABLE sink_table ("
                         + " name STRING,"
-                        + " value INT"
+                        + " `value` INT"
                         + ") with ("
                         + "  'connector'='oceanbase',"
                         + "  'table-name'='no_pk_sink',"
