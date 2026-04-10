@@ -343,7 +343,7 @@ CREATE TABLE t_sink
                 <td>否</td>
                 <td style="word-wrap: break-word;"></td>
                 <td>String</td>
-                <td>用于分片的列名。MySQL 模式下默认使用主键列，Oracle 模式下默认使用 ROWID。如果不指定，将根据默认策略自动分片。</td>
+                <td>用于分片的列名。MySQL 模式下默认使用主键列，Oracle 模式下默认使用 ROWID。如果不指定，将根据默认策略自动分片。指定的列必须是非空（NOT NULL）列，切片键列中的 NULL 值将被静默排除，不会出现在读取结果中。</td>
             </tr>
             <tr>
                 <td>fetch-size</td>

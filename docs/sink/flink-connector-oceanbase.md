@@ -340,7 +340,7 @@ CREATE TABLE t_sink
                 <td>No</td>
                 <td style="word-wrap: break-word;"></td>
                 <td>String</td>
-                <td>The column used for splitting chunks. In MySQL mode, defaults to the primary key column. In Oracle mode, defaults to ROWID. If not specified, the table will be split automatically based on the default strategy.</td>
+                <td>The column used for splitting chunks. In MySQL mode, defaults to the primary key column. In Oracle mode, defaults to ROWID. If not specified, the table will be split automatically based on the default strategy. The specified column must be a non-null column. NULL values in the chunk key column will be silently excluded from the read results.</td>
             </tr>
             <tr>
                 <td>fetch-size</td>
