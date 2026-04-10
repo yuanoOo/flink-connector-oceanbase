@@ -66,6 +66,7 @@ public class OceanBaseSplitEnumerator
     private final Set<Integer> readersAwaitingSplit;
     private volatile long cachedRowCount = -1L;
     private volatile boolean splitDiscoveryFinished = false;
+    private volatile Throwable splitDiscoveryError = null;
 
     private volatile DruidDataSource dataSource;
     private ExecutorService splitDiscoveryExecutor;
@@ -108,6 +109,7 @@ public class OceanBaseSplitEnumerator
     @Override
     public void handleSplitRequest(int subtaskId, String requesterHostname) {
         LOG.debug("Received split request from subtask {}", subtaskId);
+        checkSplitDiscoveryErrors();
         OceanBaseSplit finishedSplit = inFlightSplits.remove(subtaskId);
         if (finishedSplit != null) {
             LOG.debug(
@@ -206,6 +208,7 @@ public class OceanBaseSplitEnumerator
                         LOG.error("Error checking split discovery status", error);
                         return;
                     }
+                    checkSplitDiscoveryErrors();
                     assignPendingSplits();
                     if (splitDiscoveryFinished) {
                         signalNoMoreSplitsIfDone();
@@ -228,11 +231,22 @@ public class OceanBaseSplitEnumerator
                     "Async split discovery completed for table {}.{}",
                     config.getSchemaName(),
                     config.getTableName());
-        } catch (SQLException e) {
+        } catch (Throwable e) {
             LOG.error("Failed to discover splits asynchronously", e);
-            throw new RuntimeException("Failed to discover splits", e);
+            if (splitDiscoveryError == null) {
+                splitDiscoveryError = e;
+            } else {
+                splitDiscoveryError.addSuppressed(e);
+            }
         } finally {
             splitDiscoveryFinished = true;
+        }
+    }
+
+    private void checkSplitDiscoveryErrors() {
+        if (splitDiscoveryError != null) {
+            throw new RuntimeException(
+                    "Split discovery has encountered exception", splitDiscoveryError);
         }
     }
 
@@ -500,11 +514,13 @@ public class OceanBaseSplitEnumerator
                 points.add(minVal.add(step.multiply(new BigDecimal(i))));
             }
         } else if (min instanceof Long || min instanceof Integer) {
-            long minVal = ((Number) min).longValue();
-            long maxVal = ((Number) max).longValue();
-            long range = maxVal - minVal;
+            BigDecimal minVal = BigDecimal.valueOf(((Number) min).longValue());
+            BigDecimal maxVal = BigDecimal.valueOf(((Number) max).longValue());
+            BigDecimal step =
+                    maxVal.subtract(minVal)
+                            .divide(new BigDecimal(numSplits), 0, RoundingMode.HALF_UP);
             for (int i = 1; i < numSplits; i++) {
-                points.add(minVal + range * i / numSplits);
+                points.add(minVal.add(step.multiply(new BigDecimal(i))).longValue());
             }
         } else if (min instanceof Number && max instanceof Number) {
             double minVal = ((Number) min).doubleValue();

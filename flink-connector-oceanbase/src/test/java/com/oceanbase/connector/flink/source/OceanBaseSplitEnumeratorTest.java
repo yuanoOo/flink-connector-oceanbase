@@ -177,6 +177,53 @@ public class OceanBaseSplitEnumeratorTest {
         assertEquals(75.0, ((Double) points.get(3)).doubleValue(), 0.001);
     }
 
+    @Test
+    public void testLongSplitPointsFullRangeNoOverflow() {
+        OceanBaseSplitEnumerator enumerator = createEnumerator("MySQL", "id");
+        // Full BIGINT range: Long.MIN_VALUE to Long.MAX_VALUE
+        List<Object> points =
+                enumerator.generateSplitPointsForTest("id", Long.MIN_VALUE, Long.MAX_VALUE, 4);
+
+        assertEquals(5, points.size());
+        assertNull(points.get(0));
+        assertNull(points.get(points.size() - 1));
+
+        // Verify split points are monotonically increasing and within range
+        for (int i = 1; i < points.size() - 1; i++) {
+            assertTrue(points.get(i) instanceof Long);
+        }
+        long p1 = (Long) points.get(1);
+        long p2 = (Long) points.get(2);
+        long p3 = (Long) points.get(3);
+
+        assertTrue(Long.MIN_VALUE < p1, "First split point should be > Long.MIN_VALUE");
+        assertTrue(p1 < p2, "Split points should be monotonically increasing");
+        assertTrue(p2 < p3, "Split points should be monotonically increasing");
+        assertTrue(p3 < Long.MAX_VALUE, "Last split point should be < Long.MAX_VALUE");
+    }
+
+    @Test
+    public void testLongSplitPointsLargeRangeNoOverflow() {
+        OceanBaseSplitEnumerator enumerator = createEnumerator("MySQL", "id");
+        // Large range that would overflow with naive long multiplication
+        long min = 0L;
+        long max = Long.MAX_VALUE;
+        List<Object> points = enumerator.generateSplitPointsForTest("id", min, max, 4);
+
+        assertEquals(5, points.size());
+        assertNull(points.get(0));
+        assertNull(points.get(points.size() - 1));
+
+        long p1 = (Long) points.get(1);
+        long p2 = (Long) points.get(2);
+        long p3 = (Long) points.get(3);
+
+        assertTrue(p1 > 0, "Split points should be positive");
+        assertTrue(p1 < p2);
+        assertTrue(p2 < p3);
+        assertTrue(p3 < Long.MAX_VALUE);
+    }
+
     // Helper methods
 
     private static OceanBaseSourceConfig createConfig(
