@@ -120,7 +120,7 @@ Query data from the source table.
 SELECT * FROM t_source;
 ```
 
-For users of OceanBase EE with Oracle mode, you need to specify the `url`, `driver-class-name` and `compatible-mode` corresponding to the OceanBase JDBC driver.
+For users of OceanBase EE with Oracle mode, you must use the OceanBase JDBC driver (MySQL driver is not supported for Oracle mode), and specify the `url` and `compatible-mode`.
 
 ```sql
 CREATE TABLE t_source

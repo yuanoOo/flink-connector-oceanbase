@@ -121,7 +121,7 @@ CREATE TABLE t_source
 SELECT * FROM t_source;
 ```
 
-对于 OceanBase 数据库企业版 Oracle 模式的用户，需要指定 OceanBase JDBC 驱动对应的 `url`、`driver-class-name` 和 `compatible-mode`。
+对于 OceanBase 数据库企业版 Oracle 模式的用户，必须使用 OceanBase JDBC 驱动（不支持 MySQL 驱动），并指定 `url` 和 `compatible-mode`。
 
 ```sql
 CREATE TABLE t_source
