@@ -44,8 +44,7 @@ import java.util.concurrent.TimeUnit;
 @Timeout(value = 300, unit = TimeUnit.SECONDS)
 public class OceanBaseSourceFailoverITCase extends OceanBaseSourceTestBase {
 
-    private static final Logger LOG =
-            LoggerFactory.getLogger(OceanBaseSourceFailoverITCase.class);
+    private static final Logger LOG = LoggerFactory.getLogger(OceanBaseSourceFailoverITCase.class);
 
     private static final int EXPECTED_ROW_COUNT = 30;
 
