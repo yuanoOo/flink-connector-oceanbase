@@ -193,4 +193,63 @@ public class OceanBaseMySQLSourceITCase extends OceanBaseMySQLTestBase {
 
         dropTables("all_types_source", "all_types_sink");
     }
+
+    @Test
+    public void testSourceWithStringPrimaryKey() throws Exception {
+        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+        env.setParallelism(1);
+        StreamTableEnvironment tEnv =
+                StreamTableEnvironment.create(
+                        env, EnvironmentSettings.newInstance().inStreamingMode().build());
+
+        initialize("sql/mysql/string_pk_source.sql");
+
+        tEnv.executeSql(
+                "CREATE TEMPORARY TABLE source_table ("
+                        + " code STRING NOT NULL,"
+                        + " name STRING,"
+                        + " price DECIMAL(10, 2),"
+                        + " PRIMARY KEY (code) NOT ENFORCED"
+                        + ") with ("
+                        + "  'connector'='oceanbase',"
+                        + "  'table-name'='string_pk_source',"
+                        + "  'compatible-mode'='MySQL',"
+                        + "  'split-size'='3',"
+                        + getOptionsString()
+                        + ");");
+
+        tEnv.executeSql(
+                "CREATE TEMPORARY TABLE sink_table ("
+                        + " code STRING NOT NULL,"
+                        + " name STRING,"
+                        + " price DECIMAL(10, 2),"
+                        + " PRIMARY KEY (code) NOT ENFORCED"
+                        + ") with ("
+                        + "  'connector'='oceanbase',"
+                        + "  'table-name'='string_pk_sink',"
+                        + getOptionsString()
+                        + ");");
+
+        tEnv.executeSql("INSERT INTO sink_table SELECT * FROM source_table").await();
+
+        waitingAndAssertTableCount("string_pk_sink", 10);
+
+        List<String> expected =
+                Arrays.asList(
+                        "A001,Alpha,10.50",
+                        "B002,Bravo,20.00",
+                        "C003,Charlie,30.75",
+                        "D004,Delta,40.25",
+                        "E005,Echo,50.00",
+                        "F006,Foxtrot,60.80",
+                        "G007,Golf,70.10",
+                        "H008,Hotel,80.90",
+                        "I009,India,90.45",
+                        "J010,Juliet,100.00");
+
+        List<String> actual = queryTable("string_pk_sink");
+        assertEqualsInAnyOrder(expected, actual);
+
+        dropTables("string_pk_source", "string_pk_sink");
+    }
 }

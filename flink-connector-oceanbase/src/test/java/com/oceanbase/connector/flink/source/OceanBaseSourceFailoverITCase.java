@@ -68,6 +68,7 @@ public class OceanBaseSourceFailoverITCase extends OceanBaseSourceTestBase {
     @BeforeEach
     public void initTestData() throws Exception {
         initialize("sql/mysql/failover_test.sql");
+        initialize("sql/mysql/string_pk_failover_test.sql");
         try (Connection conn = getJdbcConnection();
                 Statement stmt = conn.createStatement()) {
             for (int i = 1; i <= EXPECTED_ROW_COUNT; i++) {
@@ -75,13 +76,17 @@ public class OceanBaseSourceFailoverITCase extends OceanBaseSourceTestBase {
                         String.format(
                                 "INSERT INTO failover_products VALUES (%d, 'prod_%03d', 'Description for product %d', %d.0)",
                                 i, i, i, i));
+                stmt.execute(
+                        String.format(
+                                "INSERT INTO string_pk_failover_products VALUES ('A%03d', 'prod_%03d', %d.50)",
+                                i, i, i));
             }
         }
     }
 
     @AfterEach
     public void cleanUp() throws Exception {
-        dropTables("failover_products");
+        dropTables("failover_products", "string_pk_failover_products");
     }
 
     @Test
@@ -107,6 +112,21 @@ public class OceanBaseSourceFailoverITCase extends OceanBaseSourceTestBase {
     @Test
     public void testJobManagerFailoverSingleParallelism() throws Exception {
         testBoundedSourceWithFailover(1, FailoverType.JM);
+    }
+
+    @Test
+    public void testStringPkSnapshotReadWithoutFailover() throws Exception {
+        testStringPkBoundedSourceWithFailover(DEFAULT_PARALLELISM, FailoverType.NONE);
+    }
+
+    @Test
+    public void testStringPkTaskManagerFailover() throws Exception {
+        testStringPkBoundedSourceWithFailover(DEFAULT_PARALLELISM, FailoverType.TM);
+    }
+
+    @Test
+    public void testStringPkJobManagerFailover() throws Exception {
+        testStringPkBoundedSourceWithFailover(DEFAULT_PARALLELISM, FailoverType.JM);
     }
 
     private void testBoundedSourceWithFailover(int parallelism, FailoverType failoverType)
@@ -153,6 +173,49 @@ public class OceanBaseSourceFailoverITCase extends OceanBaseSourceTestBase {
         }
     }
 
+    private void testStringPkBoundedSourceWithFailover(int parallelism, FailoverType failoverType)
+            throws Exception {
+        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+        env.setParallelism(parallelism);
+        env.enableCheckpointing(200L);
+        env.setRestartStrategy(RestartStrategies.fixedDelayRestart(1, 0));
+
+        StreamTableEnvironment tEnv =
+                StreamTableEnvironment.create(
+                        env, EnvironmentSettings.newInstance().inStreamingMode().build());
+
+        tEnv.executeSql(
+                "CREATE TEMPORARY TABLE source_string_pk ("
+                        + " code STRING NOT NULL,"
+                        + " name STRING,"
+                        + " price DECIMAL(10, 2),"
+                        + " PRIMARY KEY (code) NOT ENFORCED"
+                        + ") WITH ("
+                        + " 'connector' = 'oceanbase',"
+                        + " 'table-name' = 'string_pk_failover_products',"
+                        + " 'compatible-mode' = 'MySQL',"
+                        + " 'split-size' = '3',"
+                        + getOptionsString()
+                        + ")");
+
+        TableResult result = tEnv.executeSql("SELECT * FROM source_string_pk");
+        try (CloseableIterator<Row> iterator = result.collect()) {
+            JobID jobId = result.getJobClient().get().getJobID();
+
+            if (failoverType != FailoverType.NONE && iterator.hasNext()) {
+                LOG.info("First row arrived (string PK), triggering {} failover", failoverType);
+                triggerFailover(
+                        failoverType,
+                        jobId,
+                        MINI_CLUSTER_RESOURCE.getMiniCluster(),
+                        () -> sleepMs(200));
+            }
+
+            List<String> rows = fetchRows(iterator, EXPECTED_ROW_COUNT);
+            assertStringPkExactlyOnce(rows);
+        }
+    }
+
     private static List<String> fetchRows(Iterator<Row> iter, int size) {
         List<String> rows = new ArrayList<>(size);
         while (size > 0 && iter.hasNext()) {
@@ -184,6 +247,33 @@ public class OceanBaseSourceFailoverITCase extends OceanBaseSourceTestBase {
         }
         for (int i = 1; i <= EXPECTED_ROW_COUNT; i++) {
             Assertions.assertTrue(ids.contains(i), "Missing row with id=" + i);
+        }
+    }
+
+    private void assertStringPkExactlyOnce(List<String> results) {
+        Assertions.assertEquals(
+                EXPECTED_ROW_COUNT,
+                results.size(),
+                "Expected " + EXPECTED_ROW_COUNT + " rows but got " + results.size());
+
+        Set<String> unique = new HashSet<>(results);
+        Assertions.assertEquals(
+                EXPECTED_ROW_COUNT,
+                unique.size(),
+                "Found duplicate rows: expected "
+                        + EXPECTED_ROW_COUNT
+                        + " unique rows but got "
+                        + unique.size());
+
+        Set<String> codes = new HashSet<>();
+        for (String row : results) {
+            String content = row.substring(row.indexOf('[') + 1, row.indexOf(','));
+            codes.add(content.trim());
+        }
+        for (int i = 1; i <= EXPECTED_ROW_COUNT; i++) {
+            String expectedCode = String.format("A%03d", i);
+            Assertions.assertTrue(
+                    codes.contains(expectedCode), "Missing row with code=" + expectedCode);
         }
     }
 
