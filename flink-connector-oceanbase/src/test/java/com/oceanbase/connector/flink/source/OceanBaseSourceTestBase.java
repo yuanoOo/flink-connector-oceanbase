@@ -24,7 +24,6 @@ import org.apache.flink.runtime.highavailability.nonha.embedded.HaLeadershipCont
 import org.apache.flink.runtime.minicluster.MiniCluster;
 import org.apache.flink.runtime.minicluster.RpcServiceSharing;
 import org.apache.flink.runtime.testutils.MiniClusterResourceConfiguration;
-import org.apache.flink.table.planner.factories.TestValuesTableFactory;
 import org.apache.flink.test.util.MiniClusterWithClientResource;
 
 /** Base class for OceanBase source failover tests with MiniCluster support. */
@@ -85,22 +84,5 @@ public abstract class OceanBaseSourceTestBase extends OceanBaseMySQLTestBase {
             HaLeadershipControl leadershipControl, JobID jobId) throws Exception {
         EmbeddedHaServices control = (EmbeddedHaServices) leadershipControl;
         control.getJobManagerLeaderElection(jobId).close();
-    }
-
-    protected static void waitForSinkSize(String sinkName, int minSize)
-            throws InterruptedException {
-        while (sinkSize(sinkName) < minSize) {
-            Thread.sleep(100);
-        }
-    }
-
-    protected static int sinkSize(String sinkName) {
-        synchronized (TestValuesTableFactory.class) {
-            try {
-                return TestValuesTableFactory.getResults(sinkName).size();
-            } catch (IllegalArgumentException e) {
-                return 0;
-            }
-        }
     }
 }

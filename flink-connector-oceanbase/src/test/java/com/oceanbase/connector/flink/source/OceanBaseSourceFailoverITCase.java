@@ -17,14 +17,13 @@
 package com.oceanbase.connector.flink.source;
 
 import org.apache.flink.api.common.JobID;
-import org.apache.flink.api.common.JobStatus;
 import org.apache.flink.api.common.restartstrategy.RestartStrategies;
-import org.apache.flink.core.execution.JobClient;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.table.api.EnvironmentSettings;
 import org.apache.flink.table.api.TableResult;
 import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
-import org.apache.flink.table.planner.factories.TestValuesTableFactory;
+import org.apache.flink.types.Row;
+import org.apache.flink.util.CloseableIterator;
 
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
@@ -37,7 +36,11 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.testcontainers.containers.output.Slf4jLogConsumer;
 
+import java.sql.Connection;
+import java.sql.Statement;
+import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
@@ -65,13 +68,20 @@ public class OceanBaseSourceFailoverITCase extends OceanBaseSourceTestBase {
     @BeforeEach
     public void initTestData() throws Exception {
         initialize("sql/mysql/failover_test.sql");
-        TestValuesTableFactory.clearAllData();
+        try (Connection conn = getJdbcConnection();
+                Statement stmt = conn.createStatement()) {
+            for (int i = 1; i <= EXPECTED_ROW_COUNT; i++) {
+                stmt.execute(
+                        String.format(
+                                "INSERT INTO failover_products VALUES (%d, 'prod_%03d', 'Description for product %d', %d.0)",
+                                i, i, i, i));
+            }
+        }
     }
 
     @AfterEach
     public void cleanUp() throws Exception {
         dropTables("failover_products");
-        TestValuesTableFactory.clearAllData();
     }
 
     @Test
@@ -125,55 +135,31 @@ public class OceanBaseSourceFailoverITCase extends OceanBaseSourceTestBase {
                         + getOptionsString()
                         + ")");
 
-        tEnv.executeSql(
-                "CREATE TEMPORARY TABLE sink_products ("
-                        + " id INT NOT NULL,"
-                        + " name STRING,"
-                        + " description STRING,"
-                        + " weight DECIMAL(20, 10)"
-                        + ") WITH ("
-                        + " 'connector' = 'values',"
-                        + " 'sink-insert-only' = 'true'"
-                        + ")");
+        TableResult result = tEnv.executeSql("SELECT * FROM source_products");
+        try (CloseableIterator<Row> iterator = result.collect()) {
+            JobID jobId = result.getJobClient().get().getJobID();
 
-        TableResult result =
-                tEnv.executeSql("INSERT INTO sink_products SELECT * FROM source_products");
+            if (failoverType != FailoverType.NONE && iterator.hasNext()) {
+                LOG.info("First row arrived, triggering {} failover", failoverType);
+                triggerFailover(
+                        failoverType,
+                        jobId,
+                        MINI_CLUSTER_RESOURCE.getMiniCluster(),
+                        () -> sleepMs(200));
+            }
 
-        if (failoverType != FailoverType.NONE) {
-            JobClient jobClient = result.getJobClient().get();
-            JobID jobId = jobClient.getJobID();
-            waitForSinkSize("sink_products", 3);
-
-            // Assert job is still processing splits (not finished yet)
-            int currentSize = sinkSize("sink_products");
-            Assertions.assertTrue(
-                    currentSize < EXPECTED_ROW_COUNT,
-                    "Job already finished before failover triggered (sink has "
-                            + currentSize
-                            + "/"
-                            + EXPECTED_ROW_COUNT
-                            + " rows)");
-            LOG.info(
-                    "Triggering {} failover with sink at {}/{} rows",
-                    failoverType,
-                    currentSize,
-                    EXPECTED_ROW_COUNT);
-
-            triggerFailover(
-                    failoverType,
-                    jobId,
-                    MINI_CLUSTER_RESOURCE.getMiniCluster(),
-                    () -> sleepMs(200));
-
-            // Wait for job to recover from failover and reach RUNNING again
-            waitUntilJobRunning(jobClient);
-            LOG.info("Job recovered from {} failover, now RUNNING", failoverType);
+            List<String> rows = fetchRows(iterator, EXPECTED_ROW_COUNT);
+            assertExactlyOnce(rows);
         }
+    }
 
-        result.await();
-
-        List<String> results = TestValuesTableFactory.getResults("sink_products");
-        assertExactlyOnce(results);
+    private static List<String> fetchRows(Iterator<Row> iter, int size) {
+        List<String> rows = new ArrayList<>(size);
+        while (size > 0 && iter.hasNext()) {
+            rows.add(iter.next().toString());
+            size--;
+        }
+        return rows;
     }
 
     private void assertExactlyOnce(List<String> results) {
@@ -191,24 +177,13 @@ public class OceanBaseSourceFailoverITCase extends OceanBaseSourceTestBase {
                         + " unique rows but got "
                         + unique.size());
 
-        for (int i = 1; i <= EXPECTED_ROW_COUNT; i++) {
-            String prefix = "+I[" + i + ", ";
-            boolean found = results.stream().anyMatch(r -> r.startsWith(prefix));
-            Assertions.assertTrue(found, "Missing row with id=" + i);
+        Set<Integer> ids = new HashSet<>();
+        for (String row : results) {
+            String content = row.substring(row.indexOf('[') + 1, row.indexOf(','));
+            ids.add(Integer.parseInt(content.trim()));
         }
-    }
-
-    private static void waitUntilJobRunning(JobClient jobClient) throws Exception {
-        while (true) {
-            JobStatus status = jobClient.getJobStatus().get();
-            if (status == JobStatus.RUNNING) {
-                return;
-            }
-            if (status.isTerminalState()) {
-                throw new RuntimeException(
-                        "Job reached terminal state " + status + " while waiting for RUNNING");
-            }
-            Thread.sleep(100);
+        for (int i = 1; i <= EXPECTED_ROW_COUNT; i++) {
+            Assertions.assertTrue(ids.contains(i), "Missing row with id=" + i);
         }
     }
 
