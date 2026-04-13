@@ -17,7 +17,9 @@
 package com.oceanbase.connector.flink.source;
 
 import org.apache.flink.api.common.JobID;
+import org.apache.flink.api.common.JobStatus;
 import org.apache.flink.api.common.restartstrategy.RestartStrategies;
+import org.apache.flink.core.execution.JobClient;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.table.api.EnvironmentSettings;
 import org.apache.flink.table.api.TableResult;
@@ -138,14 +140,34 @@ public class OceanBaseSourceFailoverITCase extends OceanBaseSourceTestBase {
                 tEnv.executeSql("INSERT INTO sink_products SELECT * FROM source_products");
 
         if (failoverType != FailoverType.NONE) {
-            JobID jobId = result.getJobClient().get().getJobID();
+            JobClient jobClient = result.getJobClient().get();
+            JobID jobId = jobClient.getJobID();
             waitForSinkSize("sink_products", 3);
+
+            // Assert job is still processing splits (not finished yet)
+            int currentSize = sinkSize("sink_products");
+            Assertions.assertTrue(
+                    currentSize < EXPECTED_ROW_COUNT,
+                    "Job already finished before failover triggered (sink has "
+                            + currentSize
+                            + "/"
+                            + EXPECTED_ROW_COUNT
+                            + " rows)");
+            LOG.info(
+                    "Triggering {} failover with sink at {}/{} rows",
+                    failoverType,
+                    currentSize,
+                    EXPECTED_ROW_COUNT);
 
             triggerFailover(
                     failoverType,
                     jobId,
                     MINI_CLUSTER_RESOURCE.getMiniCluster(),
                     () -> sleepMs(200));
+
+            // Wait for job to recover from failover and reach RUNNING again
+            waitUntilJobRunning(jobClient);
+            LOG.info("Job recovered from {} failover, now RUNNING", failoverType);
         }
 
         result.await();
@@ -173,6 +195,20 @@ public class OceanBaseSourceFailoverITCase extends OceanBaseSourceTestBase {
             String prefix = "+I[" + i + ", ";
             boolean found = results.stream().anyMatch(r -> r.startsWith(prefix));
             Assertions.assertTrue(found, "Missing row with id=" + i);
+        }
+    }
+
+    private static void waitUntilJobRunning(JobClient jobClient) throws Exception {
+        while (true) {
+            JobStatus status = jobClient.getJobStatus().get();
+            if (status == JobStatus.RUNNING) {
+                return;
+            }
+            if (status.isTerminalState()) {
+                throw new RuntimeException(
+                        "Job reached terminal state " + status + " while waiting for RUNNING");
+            }
+            Thread.sleep(100);
         }
     }
 
