@@ -1,0 +1,66 @@
+/*
+ * Copyright 2024 OceanBase.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package com.oceanbase.connector.flink.source;
+
+import java.io.Serializable;
+import java.util.ArrayList;
+import java.util.List;
+
+/** State for OceanBase split enumerator. */
+public class OceanBaseEnumeratorState implements Serializable {
+
+    private static final long serialVersionUID = 1L;
+
+    // Splits that were assigned to readers when checkpoint was taken and may still be in flight.
+    private final List<OceanBaseSplit> inFlightSplits;
+    // Splits that have not been assigned yet.
+    private final List<OceanBaseSplit> pendingSplits;
+    // Whether split discovery has completed. If false on restore, discovery must be re-run.
+    private final boolean splitDiscoveryFinished;
+
+    public OceanBaseEnumeratorState() {
+        this.inFlightSplits = new ArrayList<>();
+        this.pendingSplits = new ArrayList<>();
+        this.splitDiscoveryFinished = true;
+    }
+
+    public OceanBaseEnumeratorState(
+            List<OceanBaseSplit> inFlightSplits, List<OceanBaseSplit> pendingSplits) {
+        this(inFlightSplits, pendingSplits, true);
+    }
+
+    public OceanBaseEnumeratorState(
+            List<OceanBaseSplit> inFlightSplits,
+            List<OceanBaseSplit> pendingSplits,
+            boolean splitDiscoveryFinished) {
+        this.inFlightSplits = inFlightSplits;
+        this.pendingSplits = pendingSplits;
+        this.splitDiscoveryFinished = splitDiscoveryFinished;
+    }
+
+    public List<OceanBaseSplit> getInFlightSplits() {
+        return inFlightSplits;
+    }
+
+    public List<OceanBaseSplit> getPendingSplits() {
+        return pendingSplits;
+    }
+
+    public boolean isSplitDiscoveryFinished() {
+        return splitDiscoveryFinished;
+    }
+}

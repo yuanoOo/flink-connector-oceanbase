@@ -2,7 +2,7 @@
 
 English | [简体中文](flink-connector-oceanbase_cn.md)
 
-This is the Flink connector for OceanBase, which can be used to sink data to OceanBase via JDBC driver.
+This is the Flink connector for OceanBase, which can be used to read data from and write data to OceanBase via JDBC driver. It supports both MySQL and Oracle compatibility modes.
 
 ## Getting Started
 
@@ -73,7 +73,79 @@ This project has built-in MySQL driver 8.0.28. For users of OceanBase EE who wan
 
 ### Demo
 
-#### Preparation
+#### Source
+
+##### Preparation
+
+Create the source table 't_source' under the 'test' database of the OceanBase MySQL mode and insert some data.
+
+```mysql
+USE test;
+CREATE TABLE `t_source` (
+  `id` int(10) NOT NULL,
+  `username` varchar(20) DEFAULT NULL,
+  `score` int(10) DEFAULT NULL,
+  PRIMARY KEY (`id`)
+);
+INSERT INTO t_source VALUES (1, 'Tom', 99), (2, 'Jerry', 88), (3, 'Alice', 95);
+```
+
+##### Flink SQL Demo
+
+Put the JAR files of dependencies to the 'lib' directory of Flink, and then create the source table with Flink SQL through the sql client.
+
+```sql
+CREATE TABLE t_source
+(
+    id       INT,
+    username VARCHAR,
+    score    INT,
+    PRIMARY KEY (id) NOT ENFORCED
+) WITH (
+    'connector' = 'oceanbase',
+    'url' = 'jdbc:mysql://127.0.0.1:2881/test',
+    'schema-name' = 'test',
+    'table-name' = 't_source',
+    'username' = 'root@test#obcluster',
+    'password' = 'pswd',
+    'compatible-mode' = 'MySQL',
+    'split-size' = '8192',
+    'fetch-size' = '1024'
+);
+```
+
+Query data from the source table.
+
+```sql
+SELECT * FROM t_source;
+```
+
+For users of OceanBase EE with Oracle mode, you must use the OceanBase JDBC driver (MySQL driver is not supported for Oracle mode), and specify the `url` and `compatible-mode`.
+
+```sql
+CREATE TABLE t_source
+(
+    id       INT,
+    username VARCHAR,
+    score    INT,
+    PRIMARY KEY (id) NOT ENFORCED
+) WITH (
+    'connector' = 'oceanbase',
+    'url' = 'jdbc:oceanbase://127.0.0.1:2881/SYS',
+    'driver-class-name' = 'com.oceanbase.jdbc.Driver',
+    'schema-name' = 'SYS',
+    'table-name' = 'T_SOURCE',
+    'compatible-mode' = 'Oracle',
+    'username' = 'SYS@test#obcluster',
+    'password' = 'pswd',
+    'split-size' = '8192',
+    'fetch-size' = '1024'
+);
+```
+
+#### Sink
+
+##### Preparation
 
 Create the destination table 't_sink' under the 'test' database of the OceanBase MySQL mode.
 
@@ -87,7 +159,7 @@ CREATE TABLE `t_sink` (
 );
 ```
 
-#### Flink SQL Demo
+##### Flink SQL Demo
 
 Put the JAR files of dependencies to the 'lib' directory of Flink, and then create the destination table with Flink SQL through the sql client.
 
@@ -148,6 +220,8 @@ CREATE TABLE t_sink
 
 ## Configuration
 
+### Common Options
+
 <div class="highlight">
     <table class="colwidths-auto docutils">
         <thead>
@@ -188,7 +262,7 @@ CREATE TABLE t_sink
             <tr>
                 <td>schema-name</td>
                 <td>Yes</td>
-                <td>Not supported</td>
+                <td>Yes</td>
                 <td style="word-wrap: break-word;"></td>
                 <td>String</td>
                 <td>The schema name or database name.</td>
@@ -196,10 +270,18 @@ CREATE TABLE t_sink
             <tr>
                 <td>table-name</td>
                 <td>Yes</td>
-                <td>Not supported</td>
+                <td>Yes</td>
                 <td style="word-wrap: break-word;"></td>
                 <td>String</td>
                 <td>The table name.</td>
+            </tr>
+            <tr>
+                <td>compatible-mode</td>
+                <td>No</td>
+                <td>No</td>
+                <td>MySQL</td>
+                <td>String</td>
+                <td>The compatible mode of OceanBase, can be 'MySQL' or 'Oracle'.</td>
             </tr>
             <tr>
                 <td>driver-class-name</td>
@@ -217,6 +299,76 @@ CREATE TABLE t_sink
                 <td>String</td>
                 <td>Druid connection pool properties, multiple values are separated by semicolons.</td>
             </tr>
+            <tr>
+                <td>table.oracle-tenant-case-insensitive</td>
+                <td>No</td>
+                <td>No</td>
+                <td>true</td>
+                <td>Boolean</td>
+                <td>By default, under the Oracle tenant, schema names and column names are case-insensitive.</td>
+            </tr>
+        </tbody>
+    </table>
+</div>
+
+### Source Options
+
+<div class="highlight">
+    <table class="colwidths-auto docutils">
+        <thead>
+            <tr>
+                <th class="text-left" style="width: 10%">Option</th>
+                <th class="text-left" style="width: 8%">Required by Table API</th>
+                <th class="text-left" style="width: 7%">Required by DataStream</th>
+                <th class="text-left" style="width: 10%">Default</th>
+                <th class="text-left" style="width: 15%">Type</th>
+                <th class="text-left" style="width: 50%">Description</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td>split-size</td>
+                <td>No</td>
+                <td>No</td>
+                <td>8192</td>
+                <td>Integer</td>
+                <td>The number of rows per split for parallel reading.</td>
+            </tr>
+            <tr>
+                <td>chunk-key-column</td>
+                <td>No</td>
+                <td>No</td>
+                <td style="word-wrap: break-word;"></td>
+                <td>String</td>
+                <td>The column used for splitting chunks. In MySQL mode, defaults to the primary key column. In Oracle mode, defaults to ROWID. If not specified, the table will be split automatically based on the default strategy. The specified column must be a non-null column. NULL values in the chunk key column will be silently excluded from the read results.</td>
+            </tr>
+            <tr>
+                <td>fetch-size</td>
+                <td>No</td>
+                <td>No</td>
+                <td>1024</td>
+                <td>Integer</td>
+                <td>The number of rows fetched per round trip for JDBC queries.</td>
+            </tr>
+        </tbody>
+    </table>
+</div>
+
+### Sink Options
+
+<div class="highlight">
+    <table class="colwidths-auto docutils">
+        <thead>
+            <tr>
+                <th class="text-left" style="width: 10%">Option</th>
+                <th class="text-left" style="width: 8%">Required by Table API</th>
+                <th class="text-left" style="width: 7%">Required by DataStream</th>
+                <th class="text-left" style="width: 10%">Default</th>
+                <th class="text-left" style="width: 15%">Type</th>
+                <th class="text-left" style="width: 50%">Description</th>
+            </tr>
+        </thead>
+        <tbody>
             <tr>
                 <td>sync-write</td>
                 <td>No</td>
@@ -281,14 +433,6 @@ CREATE TABLE t_sink
                 <td>Boolean</td>
                 <td>Whether to enable partition calculation and flush records by partitions. Only works when 'sync-write' and 'direct-load.enabled' are 'false'.</td>
             </tr>
-            <tr>
-                <td>table.oracle-tenant-case-insensitive</td>
-                <td>No</td>
-                <td>No</td>
-                <td>true</td>
-                <td>Boolean</td>
-                <td>By default, under the Oracle tenant, schema names and column names are case-insensitive.</td>
-            </tr>
         </tbody>
     </table>
 </div>
@@ -300,4 +444,3 @@ CREATE TABLE t_sink
 [https://github.com/apache/flink-connector-jdbc](https://github.com/apache/flink-connector-jdbc)
 
 [https://github.com/oceanbase/obconnector-j](https://github.com/oceanbase/obconnector-j)
-
