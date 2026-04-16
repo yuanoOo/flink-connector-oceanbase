@@ -91,7 +91,12 @@ public abstract class AbstractDynamicTableSink implements DynamicTableSink {
                     objectReuse
                             ? dataStream.getType().createSerializer(dataStream.getExecutionConfig())
                             : null;
-            return dataStream.sinkTo(sinkSupplier.apply(typeSerializer));
+            DataStreamSink<?> dataStreamSink =
+                    dataStream.sinkTo(sinkSupplier.apply(typeSerializer));
+            if (parallelism != null) {
+                dataStreamSink.setParallelism(parallelism);
+            }
+            return dataStreamSink;
         }
     }
 }
