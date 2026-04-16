@@ -491,6 +491,21 @@ public class OceanBaseMySQLConnectorITCase extends OceanBaseMySQLTestBase {
                         + "  'fields.id.end' = '209'"
                         + ");");
 
+        // Get execution plan and verify sink parallelism
+        org.apache.flink.table.api.TableResult explainResult =
+                tEnv.executeSql(
+                        "EXPLAIN JSON_EXECUTION_PLAN "
+                                + "INSERT INTO target_parallel "
+                                + "SELECT id, name, description, weight FROM source_parallel");
+
+        String explainPlan = explainResult.collect().next().getField(0).toString();
+
+        // Verify the execution plan contains sink with parallelism 4
+        assertTrue(
+                "Execution plan should contain Sink with parallelism 4",
+                explainPlan.contains("\"parallelism\" : 4")
+                        || explainPlan.contains("\"parallelism\":4"));
+
         // Execute INSERT
         tEnv.executeSql(
                         "INSERT INTO target_parallel "
