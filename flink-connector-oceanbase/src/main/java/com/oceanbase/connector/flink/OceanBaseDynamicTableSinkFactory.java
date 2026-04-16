@@ -85,6 +85,7 @@ public class OceanBaseDynamicTableSinkFactory implements DynamicTableSinkFactory
         options.add(OceanBaseConnectorOptions.MEMSTORE_CHECK_INTERVAL);
         options.add(OceanBaseConnectorOptions.PARTITION_ENABLED);
         options.add(OceanBaseConnectorOptions.TABLE_ORACLE_TENANT_CASE_INSENSITIVE);
+        options.add(ConnectorOptions.SINK_PARALLELISM);
         // Tolerate source-only options since both factories share the "oceanbase" identifier
         options.add(OceanBaseTableSourceFactory.COMPATIBLE_MODE);
         options.add(OceanBaseTableSourceFactory.SPLIT_SIZE);

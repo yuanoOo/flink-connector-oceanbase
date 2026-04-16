@@ -84,6 +84,15 @@ public abstract class ConnectorOptions implements Serializable {
                     .withDescription(
                             "The max retry times if writing records to database failed. Default value is '3'.");
 
+    public static final ConfigOption<Integer> SINK_PARALLELISM =
+            ConfigOptions.key("sink.parallelism")
+                    .intType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "Defines a custom parallelism for the sink. "
+                                    + "By default, if this option is not defined, the sink parallelism will be "
+                                    + "determined by the execution environment.");
+
     protected final ReadableConfig allConfig;
 
     public ConnectorOptions(Map<String, String> config) {
@@ -124,5 +133,9 @@ public abstract class ConnectorOptions implements Serializable {
 
     public int getMaxRetries() {
         return allConfig.get(MAX_RETRIES);
+    }
+
+    public Integer getSinkParallelism() {
+        return allConfig.get(SINK_PARALLELISM);
     }
 }
