@@ -22,6 +22,7 @@ import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /** Tests for {@link AbstractDynamicTableSink}. */
@@ -46,5 +47,15 @@ public class AbstractDynamicTableSinkTest {
 
         Optional<Integer> parallelism = providerWithoutParallelism.getParallelism();
         assertFalse(parallelism.isPresent());
+    }
+
+    @Test
+    public void testSinkProviderWithInvalidParallelism() {
+        assertThrows(
+                IllegalStateException.class,
+                () -> new AbstractDynamicTableSink.SinkProvider(typeSerializer -> null, 0));
+        assertThrows(
+                IllegalStateException.class,
+                () -> new AbstractDynamicTableSink.SinkProvider(typeSerializer -> null, -1));
     }
 }

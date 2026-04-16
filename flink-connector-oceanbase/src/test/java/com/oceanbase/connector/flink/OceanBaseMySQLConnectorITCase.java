@@ -500,10 +500,6 @@ public class OceanBaseMySQLConnectorITCase extends OceanBaseMySQLTestBase {
         // Verify data was written
         waitingAndAssertTableCount("products", 10);
 
-        // Verify the execution plan contains the parallelism setting
-        // Note: The parallelism is applied at runtime, so we verify it through the SinkProvider
-        // The data being written correctly indicates the sink works with the parallelism setting
-
         dropTables("products");
     }
 }

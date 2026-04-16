@@ -69,6 +69,10 @@ public abstract class AbstractDynamicTableSink implements DynamicTableSink {
         public SinkProvider(
                 SerializableFunction<TypeSerializer<RowData>, Sink<RowData>> sinkSupplier,
                 Integer parallelism) {
+            checkState(
+                    parallelism == null || parallelism > 0,
+                    "sink.parallelism must be a positive integer, but got: %s",
+                    parallelism);
             this.sinkSupplier = sinkSupplier;
             this.parallelism = parallelism;
         }
