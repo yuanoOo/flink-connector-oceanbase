@@ -500,11 +500,17 @@ public class OceanBaseMySQLConnectorITCase extends OceanBaseMySQLTestBase {
 
         String explainPlan = explainResult.collect().next().getField(0).toString();
 
+        // Print execution plan for debugging
+        LOG.info("Execution plan: {}", explainPlan);
+
         // Verify the execution plan contains sink with parallelism 4
+        // The parallelism may appear in different formats depending on Flink version
         assertTrue(
-                "Execution plan should contain Sink with parallelism 4",
+                "Execution plan should contain Sink with parallelism 4. Actual plan: "
+                        + explainPlan,
                 explainPlan.contains("\"parallelism\" : 4")
-                        || explainPlan.contains("\"parallelism\":4"));
+                        || explainPlan.contains("\"parallelism\":4")
+                        || explainPlan.contains("parallelism=4"));
 
         // Execute INSERT
         tEnv.executeSql(
