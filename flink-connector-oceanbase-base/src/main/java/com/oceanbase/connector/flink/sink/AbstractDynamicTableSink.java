@@ -30,6 +30,7 @@ import org.apache.flink.types.RowKind;
 import org.apache.flink.util.function.SerializableFunction;
 
 import java.io.Serializable;
+import java.util.Optional;
 
 import static org.apache.flink.util.Preconditions.checkState;
 
@@ -63,10 +64,22 @@ public abstract class AbstractDynamicTableSink implements DynamicTableSink {
         private static final long serialVersionUID = 1L;
 
         private final SerializableFunction<TypeSerializer<RowData>, Sink<RowData>> sinkSupplier;
+        private final Integer parallelism;
 
         public SinkProvider(
-                SerializableFunction<TypeSerializer<RowData>, Sink<RowData>> sinkSupplier) {
+                SerializableFunction<TypeSerializer<RowData>, Sink<RowData>> sinkSupplier,
+                Integer parallelism) {
+            checkState(
+                    parallelism == null || parallelism > 0,
+                    "sink.parallelism must be a positive integer, but got: %s",
+                    parallelism);
             this.sinkSupplier = sinkSupplier;
+            this.parallelism = parallelism;
+        }
+
+        @Override
+        public Optional<Integer> getParallelism() {
+            return Optional.ofNullable(parallelism);
         }
 
         @Override
@@ -78,7 +91,12 @@ public abstract class AbstractDynamicTableSink implements DynamicTableSink {
                     objectReuse
                             ? dataStream.getType().createSerializer(dataStream.getExecutionConfig())
                             : null;
-            return dataStream.sinkTo(sinkSupplier.apply(typeSerializer));
+            DataStreamSink<?> dataStreamSink =
+                    dataStream.sinkTo(sinkSupplier.apply(typeSerializer));
+            if (parallelism != null) {
+                dataStreamSink.setParallelism(parallelism);
+            }
+            return dataStreamSink;
         }
     }
 }

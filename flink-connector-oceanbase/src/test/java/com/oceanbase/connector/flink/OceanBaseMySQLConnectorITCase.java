@@ -450,4 +450,77 @@ public class OceanBaseMySQLConnectorITCase extends OceanBaseMySQLTestBase {
         }
         return sb.toString();
     }
+
+    @Test
+    public void testSinkParallelism() throws Exception {
+        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+        env.setParallelism(1); // Default parallelism
+        StreamTableEnvironment tEnv =
+                StreamTableEnvironment.create(
+                        env, EnvironmentSettings.newInstance().inStreamingMode().build());
+
+        initialize("sql/mysql/products.sql");
+
+        // Create sink table with sink.parallelism = 4
+        tEnv.executeSql(
+                "CREATE TEMPORARY TABLE target_parallel ("
+                        + " `id` INT NOT NULL,"
+                        + " name STRING,"
+                        + " description STRING,"
+                        + " weight DECIMAL(20, 10),"
+                        + " PRIMARY KEY (`id`) NOT ENFORCED"
+                        + ") with ("
+                        + "  'connector'='oceanbase',"
+                        + "  'table-name'='products',"
+                        + "  'sink.parallelism' = '4',"
+                        + getOptionsString()
+                        + ");");
+
+        // Create a simple source table
+        tEnv.executeSql(
+                "CREATE TEMPORARY TABLE source_parallel ("
+                        + " `id` INT NOT NULL,"
+                        + " name STRING,"
+                        + " description STRING,"
+                        + " weight DECIMAL(20, 10)"
+                        + ") WITH ("
+                        + "  'connector' = 'datagen',"
+                        + "  'number-of-rows' = '10',"
+                        + "  'fields.id.kind' = 'sequence',"
+                        + "  'fields.id.start' = '200',"
+                        + "  'fields.id.end' = '209'"
+                        + ");");
+
+        // Get execution plan and verify sink parallelism
+        org.apache.flink.table.api.TableResult explainResult =
+                tEnv.executeSql(
+                        "EXPLAIN JSON_EXECUTION_PLAN "
+                                + "INSERT INTO target_parallel "
+                                + "SELECT id, name, description, weight FROM source_parallel");
+
+        String explainPlan = explainResult.collect().next().getField(0).toString();
+
+        // Print execution plan for debugging
+        LOG.info("Execution plan: {}", explainPlan);
+
+        // Verify the execution plan contains sink with parallelism 4
+        // The parallelism may appear in different formats depending on Flink version
+        assertTrue(
+                "Execution plan should contain Sink with parallelism 4. Actual plan: "
+                        + explainPlan,
+                explainPlan.contains("\"parallelism\" : 4")
+                        || explainPlan.contains("\"parallelism\":4")
+                        || explainPlan.contains("parallelism=4"));
+
+        // Execute INSERT
+        tEnv.executeSql(
+                        "INSERT INTO target_parallel "
+                                + "SELECT id, name, description, weight FROM source_parallel")
+                .await();
+
+        // Verify data was written
+        waitingAndAssertTableCount("products", 10);
+
+        dropTables("products");
+    }
 }

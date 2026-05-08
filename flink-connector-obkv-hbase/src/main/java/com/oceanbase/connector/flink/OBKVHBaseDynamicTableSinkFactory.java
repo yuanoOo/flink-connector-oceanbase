@@ -85,6 +85,7 @@ public class OBKVHBaseDynamicTableSinkFactory implements DynamicTableSinkFactory
         options.add(OBKVHBaseConnectorOptions.BUFFER_SIZE);
         options.add(OBKVHBaseConnectorOptions.MAX_RETRIES);
         options.add(OBKVHBaseConnectorOptions.HBASE_PROPERTIES);
+        options.add(ConnectorOptions.SINK_PARALLELISM);
         return options;
     }
 
