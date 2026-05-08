@@ -55,7 +55,8 @@ public class OceanBaseDynamicTableSink extends AbstractDynamicTableSink {
                                 new OceanBaseRowDataSerializationSchema(
                                         new TableInfo(tableId, physicalSchema)),
                                 DataChangeRecord.KeyExtractor.simple(),
-                                recordFlusher));
+                                recordFlusher),
+                connectorOptions.getSinkParallelism());
     }
 
     @Override

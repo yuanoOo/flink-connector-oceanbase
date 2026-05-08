@@ -49,7 +49,8 @@ public class OBKVHBaseDynamicTableSink extends AbstractDynamicTableSink {
                                                         connectorOptions.getTableName()),
                                                 physicalSchema)),
                                 DataChangeRecord.KeyExtractor.simple(),
-                                new OBKVHBaseRecordFlusher(connectorOptions)));
+                                new OBKVHBaseRecordFlusher(connectorOptions)),
+                connectorOptions.getSinkParallelism());
     }
 
     @Override
