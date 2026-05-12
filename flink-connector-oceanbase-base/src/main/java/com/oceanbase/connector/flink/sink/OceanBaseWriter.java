@@ -18,6 +18,7 @@ package com.oceanbase.connector.flink.sink;
 
 import com.oceanbase.connector.flink.ConnectorOptions;
 import com.oceanbase.connector.flink.table.DataChangeRecord;
+import com.oceanbase.connector.flink.table.FileCompletionDataChangeRecord;
 import com.oceanbase.connector.flink.table.Record;
 import com.oceanbase.connector.flink.table.RecordSerializationSchema;
 import com.oceanbase.connector.flink.table.SchemaChangeRecord;
@@ -53,6 +54,7 @@ public class OceanBaseWriter<T> implements SinkWriter<T> {
     private final RecordSerializationSchema<T> recordSerializer;
     private final DataChangeRecord.KeyExtractor keyExtractor;
     private final RecordFlusher recordFlusher;
+    private final FileCompletionNotifier fileCompletionNotifier;
 
     private final AtomicReference<Record> currentRecord = new AtomicReference<>();
 
@@ -72,13 +74,15 @@ public class OceanBaseWriter<T> implements SinkWriter<T> {
             TypeSerializer<T> typeSerializer,
             RecordSerializationSchema<T> recordSerializer,
             DataChangeRecord.KeyExtractor keyExtractor,
-            RecordFlusher recordFlusher) {
+            RecordFlusher recordFlusher,
+            FileCompletionNotifier fileCompletionNotifier) {
         this.options = options;
         this.metricGroup = initContext.metricGroup();
         this.typeSerializer = typeSerializer;
         this.recordSerializer = recordSerializer;
         this.keyExtractor = keyExtractor;
         this.recordFlusher = recordFlusher;
+        this.fileCompletionNotifier = fileCompletionNotifier;
         this.scheduler =
                 (options.getSyncWrite() || options.getBufferFlushInterval() == 0)
                         ? null
@@ -120,7 +124,18 @@ public class OceanBaseWriter<T> implements SinkWriter<T> {
             return;
         }
 
-        if ((options.getSyncWrite() && record instanceof DataChangeRecord)
+        if (record instanceof FileCompletionDataChangeRecord) {
+            FileCompletionDataChangeRecord completion = (FileCompletionDataChangeRecord) record;
+            // flush() drains async buffer then writes currentRecord in order, so a single call
+            // guarantees all prior rows + this completion row land in OB before notifying.
+            currentRecord.set(completion.getDataChangeRecord());
+            flush(false);
+            try {
+                fileCompletionNotifier.notify(completion.getKafkaMessage());
+            } catch (Exception e) {
+                throw new IOException("File completion Kafka notification failed.", e);
+            }
+        } else if ((options.getSyncWrite() && record instanceof DataChangeRecord)
                 || (record instanceof SchemaChangeRecord)) {
             // redundant check, currentRecord should always be null here
             while (!currentRecord.compareAndSet(null, record)) {
@@ -248,6 +263,12 @@ public class OceanBaseWriter<T> implements SinkWriter<T> {
                 }
             } catch (Exception e) {
                 LOG.warn("Close statement executor failed", e);
+            }
+
+            try {
+                fileCompletionNotifier.close();
+            } catch (Exception e) {
+                LOG.warn("Close file completion notifier failed", e);
             }
         }
         checkFlushException();

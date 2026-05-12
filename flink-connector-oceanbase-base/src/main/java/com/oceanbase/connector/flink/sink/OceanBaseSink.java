@@ -33,6 +33,7 @@ public class OceanBaseSink<T> implements Sink<T> {
     private final RecordSerializationSchema<T> recordSerializer;
     private final DataChangeRecord.KeyExtractor keyExtractor;
     private final RecordFlusher recordFlusher;
+    private final FileCompletionNotifier fileCompletionNotifier;
 
     public OceanBaseSink(
             ConnectorOptions options,
@@ -40,16 +41,39 @@ public class OceanBaseSink<T> implements Sink<T> {
             RecordSerializationSchema<T> recordSerializer,
             DataChangeRecord.KeyExtractor keyExtractor,
             RecordFlusher recordFlusher) {
+        this(
+                options,
+                typeSerializer,
+                recordSerializer,
+                keyExtractor,
+                recordFlusher,
+                FileCompletionNotifier.noop());
+    }
+
+    public OceanBaseSink(
+            ConnectorOptions options,
+            TypeSerializer<T> typeSerializer,
+            RecordSerializationSchema<T> recordSerializer,
+            DataChangeRecord.KeyExtractor keyExtractor,
+            RecordFlusher recordFlusher,
+            FileCompletionNotifier fileCompletionNotifier) {
         this.options = options;
         this.typeSerializer = typeSerializer;
         this.recordSerializer = recordSerializer;
         this.keyExtractor = keyExtractor;
         this.recordFlusher = recordFlusher;
+        this.fileCompletionNotifier = fileCompletionNotifier;
     }
 
     @Override
     public SinkWriter<T> createWriter(InitContext context) {
         return new OceanBaseWriter<>(
-                options, context, typeSerializer, recordSerializer, keyExtractor, recordFlusher);
+                options,
+                context,
+                typeSerializer,
+                recordSerializer,
+                keyExtractor,
+                recordFlusher,
+                fileCompletionNotifier);
     }
 }
