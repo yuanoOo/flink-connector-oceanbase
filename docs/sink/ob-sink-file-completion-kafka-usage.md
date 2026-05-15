@@ -10,7 +10,12 @@
 
 ## 何时启用
 
-须同时配置（选项值去掉首尾空白后非空）：
+总开关 **`file-completion.kafka.notification-enabled`**，**默认 `false`**：
+
+- **`true`**：开启 Kafka 通知，**必须**配齐下文四项，缺一建表/校验即报错。
+- **`false`**（默认）：不发 Kafka；其它 `file-completion.*` **不做必填校验**。此时 Flink 表列须与 OB 表一致，勿多留完成用两列。
+
+开启通知时，须同时配置（选项值去掉首尾空白后非空）：
 
 |                          选项                          |                 含义                  |
 |------------------------------------------------------|-------------------------------------|
@@ -21,10 +26,6 @@
 
 列类型要求：标志列为 **BOOLEAN**，消息列为 **CHAR** 或 **VARCHAR**。标志列与消息列**不能同名**（忽略大小写比较）。
 
-**未启用**：上述三个「核心」选项都未配置，且没有任何 `file-completion.kafka.properties.*` 带非空值时，不启用本功能。
-
-**半配置会报错**：只要配置了上述任一项，或配置了任意 `file-completion.kafka.properties.*`，就必须把本节表格里的四项全部配齐，否则建表/校验阶段会失败。
-
 其它 Kafka 客户端参数写在 `file-completion.kafka.properties.` 前缀下，前缀去掉后的键名与官方 Producer 配置一致（如 `security.protocol`、`sasl.mechanism` 等）。未指定时，key/value 序列化器默认为字符串类型。
 
 每条通知：Kafka **record key 为 null**，由客户端默认策略选分区。
@@ -33,7 +34,7 @@
 
 ## DDL 与主键
 
-业务列 + 标志列 + 消息列一起写在 sink 的 `CREATE TABLE` 里；**主键不能只由标志列和消息列组成**（须至少包含一条业务主键列）。
+仅在 `file-completion.kafka.notification-enabled` = `true` 时，业务列 + 标志列 + 消息列一起写在 sink 的 `CREATE TABLE` 里；**主键不能只由标志列和消息列组成**（须至少包含一条业务主键列）。
 
 ---
 
@@ -55,6 +56,7 @@ CREATE TABLE ob_sink (
   'schema-name' = 'your_schema',
   'table-name' = 'your_table',
   'sync-write' = 'true',
+  'file-completion.kafka.notification-enabled' = 'true',
   'file-completion.flag-column' = 'is_eof',
   'file-completion.message-column' = 'kafka_msg',
   'file-completion.kafka.topic' = 'your-completion-topic',

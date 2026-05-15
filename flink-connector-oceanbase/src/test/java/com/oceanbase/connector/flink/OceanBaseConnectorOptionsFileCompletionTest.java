@@ -42,6 +42,52 @@ class OceanBaseConnectorOptionsFileCompletionTest {
     }
 
     @Test
+    void validateFailsWhenNotificationExplicitlyTrueButOptionsIncomplete() {
+        Map<String, String> m = base();
+        m.put("file-completion.kafka.notification-enabled", "true");
+        m.put("file-completion.flag-column", "is_eof");
+        OceanBaseConnectorOptions opts = new OceanBaseConnectorOptions(m);
+        assertThrows(IllegalArgumentException.class, opts::validateFileCompletionOptions);
+        assertFalse(opts.isFileCompletionKafkaEnabled());
+    }
+
+    @Test
+    void validatePassesAndKafkaEnabledWhenNotificationExplicitlyTrueAndOptionsComplete() {
+        Map<String, String> m = base();
+        m.put("file-completion.kafka.notification-enabled", "true");
+        m.put("file-completion.flag-column", "is_eof");
+        m.put("file-completion.message-column", "kafka_msg");
+        m.put("file-completion.kafka.topic", "events");
+        m.put("file-completion.kafka.properties.bootstrap.servers", "localhost:9092");
+        OceanBaseConnectorOptions opts = new OceanBaseConnectorOptions(m);
+        assertDoesNotThrow(opts::validateFileCompletionOptions);
+        assertTrue(opts.isFileCompletionKafkaEnabled());
+    }
+
+    @Test
+    void validatePassesWhenNotificationExplicitlyDisabledEvenIfIncomplete() {
+        Map<String, String> m = base();
+        m.put("file-completion.kafka.notification-enabled", "false");
+        m.put("file-completion.flag-column", "is_eof");
+        OceanBaseConnectorOptions opts = new OceanBaseConnectorOptions(m);
+        assertDoesNotThrow(opts::validateFileCompletionOptions);
+        assertFalse(opts.isFileCompletionKafkaEnabled());
+    }
+
+    @Test
+    void kafkaDisabledWhenNotificationExplicitlyFalseDespiteFullOptions() {
+        Map<String, String> m = base();
+        m.put("file-completion.flag-column", "is_eof");
+        m.put("file-completion.message-column", "kafka_msg");
+        m.put("file-completion.kafka.topic", "events");
+        m.put("file-completion.kafka.properties.bootstrap.servers", "localhost:9092");
+        m.put("file-completion.kafka.notification-enabled", "false");
+        OceanBaseConnectorOptions opts = new OceanBaseConnectorOptions(m);
+        assertDoesNotThrow(opts::validateFileCompletionOptions);
+        assertFalse(opts.isFileCompletionKafkaEnabled());
+    }
+
+    @Test
     void validatePassesWhenNoFileCompletionOptions() {
         OceanBaseConnectorOptions opts = new OceanBaseConnectorOptions(base());
         assertDoesNotThrow(opts::validateFileCompletionOptions);
@@ -49,8 +95,20 @@ class OceanBaseConnectorOptionsFileCompletionTest {
     }
 
     @Test
-    void validateFailsWhenCoreOptionsSetButBootstrapServersMissing() {
+    void validatePassesWhenPartialOptionsWithoutEnablingNotification() {
         Map<String, String> m = base();
+        m.put("file-completion.flag-column", "is_eof");
+        m.put("file-completion.message-column", "kafka_msg");
+        m.put("file-completion.kafka.topic", "events");
+        OceanBaseConnectorOptions opts = new OceanBaseConnectorOptions(m);
+        assertDoesNotThrow(opts::validateFileCompletionOptions);
+        assertFalse(opts.isFileCompletionKafkaEnabled());
+    }
+
+    @Test
+    void validateFailsWhenNotificationEnabledButBootstrapServersMissing() {
+        Map<String, String> m = base();
+        m.put("file-completion.kafka.notification-enabled", "true");
         m.put("file-completion.flag-column", "is_eof");
         m.put("file-completion.message-column", "kafka_msg");
         m.put("file-completion.kafka.topic", "events");
@@ -64,6 +122,7 @@ class OceanBaseConnectorOptionsFileCompletionTest {
     @Test
     void validateFailsWhenFlagAndMessageColumnNamesEqualIgnoringCase() {
         Map<String, String> m = base();
+        m.put("file-completion.kafka.notification-enabled", "true");
         m.put("file-completion.flag-column", "SameCol");
         m.put("file-completion.message-column", "samecol");
         m.put("file-completion.kafka.topic", "events");
@@ -73,7 +132,7 @@ class OceanBaseConnectorOptionsFileCompletionTest {
     }
 
     @Test
-    void validatePassesAndKafkaEnabledWhenAllRequiredFileCompletionOptionsPresent() {
+    void kafkaDisabledByDefaultEvenWhenAllFileCompletionOptionsPresent() {
         Map<String, String> m = base();
         m.put("file-completion.flag-column", "is_eof");
         m.put("file-completion.message-column", "kafka_msg");
@@ -81,12 +140,13 @@ class OceanBaseConnectorOptionsFileCompletionTest {
         m.put("file-completion.kafka.properties.bootstrap.servers", "localhost:9092");
         OceanBaseConnectorOptions opts = new OceanBaseConnectorOptions(m);
         assertDoesNotThrow(opts::validateFileCompletionOptions);
-        assertTrue(opts.isFileCompletionKafkaEnabled());
+        assertFalse(opts.isFileCompletionKafkaEnabled());
     }
 
     @Test
     void kafkaPropertyPrefixIsForwardedToProducerProperties() {
         Map<String, String> m = base();
+        m.put("file-completion.kafka.notification-enabled", "true");
         m.put("file-completion.flag-column", "is_eof");
         m.put("file-completion.message-column", "kafka_msg");
         m.put("file-completion.kafka.topic", "events");

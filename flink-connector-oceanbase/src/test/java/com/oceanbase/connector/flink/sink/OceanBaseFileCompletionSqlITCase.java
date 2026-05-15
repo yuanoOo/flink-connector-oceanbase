@@ -195,6 +195,22 @@ class OceanBaseFileCompletionSqlITCase {
     }
 
     @Test
+    void notificationDisabledWritesToObWithoutKafkaDespitePartialFileCompletionOptions()
+            throws Exception {
+        StreamTableEnvironment tEnv = newTableEnv();
+
+        tEnv.executeSql(buildSinkDdlNotificationDisabled());
+        tEnv.executeSql(
+                        "INSERT INTO ob_sink VALUES "
+                                + " (40, CAST('plain' AS STRING), CAST(4.00 AS DECIMAL(10,2))),"
+                                + " (41, CAST('sink'  AS STRING), CAST(5.00 AS DECIMAL(10,2)))")
+                .await();
+
+        assertEquals(Arrays.asList("40|plain|4.00", "41|sink|5.00"), queryOrderedById());
+        assertTrue(mockProducer.history().isEmpty());
+    }
+
+    @Test
     void kafkaSendFailureBubblesUpAsJobFailure() throws Exception {
         MockProducer<String, String> failing =
                 new MockProducer<>(true, new StringSerializer(), new StringSerializer());
@@ -230,6 +246,25 @@ class OceanBaseFileCompletionSqlITCase {
     }
 
     private static String buildSinkDdl() {
+        return buildSinkDdlWithFileCompletionKafka(true);
+    }
+
+    /** OB-matching schema; notification off with deliberately incomplete file-completion keys. */
+    private static String buildSinkDdlNotificationDisabled() {
+        return "CREATE TEMPORARY TABLE ob_sink ("
+                + " id INT,"
+                + " name STRING,"
+                + " amount DECIMAL(10,2),"
+                + " PRIMARY KEY (id) NOT ENFORCED"
+                + ") WITH ("
+                + commonSinkOptions()
+                + " 'file-completion.kafka.notification-enabled'='false',"
+                + " 'file-completion.flag-column'='is_eof',"
+                + " 'file-completion.kafka.topic'='oss-file-events'"
+                + ")";
+    }
+
+    private static String buildSinkDdlWithFileCompletionKafka(boolean notificationEnabled) {
         return "CREATE TEMPORARY TABLE ob_sink ("
                 + " id INT,"
                 + " name STRING,"
@@ -241,6 +276,9 @@ class OceanBaseFileCompletionSqlITCase {
                 + commonSinkOptions()
                 + " 'file-completion.flag-column'='is_eof',"
                 + " 'file-completion.message-column'='kafka_msg',"
+                + " 'file-completion.kafka.notification-enabled'='"
+                + notificationEnabled
+                + "',"
                 + " 'file-completion.kafka.topic'='oss-file-events',"
                 + " 'file-completion.kafka.properties.bootstrap.servers'='dummy:9092'"
                 + ")";

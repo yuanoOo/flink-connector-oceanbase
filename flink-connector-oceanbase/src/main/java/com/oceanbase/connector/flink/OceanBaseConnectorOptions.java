@@ -100,6 +100,19 @@ public class OceanBaseConnectorOptions extends ConnectorOptions {
                     .withDescription("Kafka topic for file-completion notifications.");
 
     /**
+     * When {@code true}, all required file-completion Kafka options must be set or validation
+     * fails. Default is {@code false}: no Kafka notifications and other file-completion keys are
+     * not validated.
+     */
+    public static final ConfigOption<Boolean> FILE_COMPLETION_KAFKA_NOTIFICATION_ENABLED =
+            ConfigOptions.key("file-completion.kafka.notification-enabled")
+                    .booleanType()
+                    .defaultValue(false)
+                    .withDescription(
+                            "Whether to send Kafka notifications on file completion. Default false. "
+                                    + "When true, all required file-completion options must be set.");
+
+    /**
      * All keys with this prefix are forwarded to the Kafka producer config (prefix stripped). Use
      * to set bootstrap.servers, security.protocol, sasl.*, etc.
      */
@@ -143,8 +156,17 @@ public class OceanBaseConnectorOptions extends ConnectorOptions {
         return allConfig.get(TABLE_ORACLE_TENANT_CASE_INSENSITIVE);
     }
 
-    /** True iff all required file-completion options are set; validation runs once at factory. */
+    /** True when notification switch is on and all required file-completion options are set. */
     public boolean isFileCompletionKafkaEnabled() {
+        return isFileCompletionKafkaNotificationEnabled()
+                && hasAllFileCompletionKafkaRequiredOptions();
+    }
+
+    public boolean isFileCompletionKafkaNotificationEnabled() {
+        return allConfig.get(FILE_COMPLETION_KAFKA_NOTIFICATION_ENABLED);
+    }
+
+    private boolean hasAllFileCompletionKafkaRequiredOptions() {
         return getFileCompletionFlagColumn() != null
                 && getFileCompletionMessageColumn() != null
                 && getFileCompletionKafkaTopic() != null
@@ -177,18 +199,16 @@ public class OceanBaseConnectorOptions extends ConnectorOptions {
     }
 
     /**
-     * Ensures file-completion options are either fully specified for Kafka notifications or
-     * entirely absent.
+     * When notification is enabled, all required file-completion Kafka options must be complete.
      */
     public void validateFileCompletionOptions() {
-        boolean anyKafkaProp = !kafkaPropertyView().isEmpty();
-        boolean anyCore =
-                getFileCompletionFlagColumn() != null
-                        || getFileCompletionMessageColumn() != null
-                        || getFileCompletionKafkaTopic() != null;
-        if (!anyCore && !anyKafkaProp) {
+        if (!isFileCompletionKafkaNotificationEnabled()) {
             return;
         }
+        requireCompleteFileCompletionKafkaOptions();
+    }
+
+    private void requireCompleteFileCompletionKafkaOptions() {
         String flag = require(FILE_COMPLETION_FLAG_COLUMN.key(), getFileCompletionFlagColumn());
         String msg =
                 require(FILE_COMPLETION_MESSAGE_COLUMN.key(), getFileCompletionMessageColumn());

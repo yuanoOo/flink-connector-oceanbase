@@ -102,6 +102,7 @@ public class OceanBaseDynamicTableSinkFactory implements DynamicTableSinkFactory
         options.add(OceanBaseConnectorOptions.FILE_COMPLETION_FLAG_COLUMN);
         options.add(OceanBaseConnectorOptions.FILE_COMPLETION_MESSAGE_COLUMN);
         options.add(OceanBaseConnectorOptions.FILE_COMPLETION_KAFKA_TOPIC);
+        options.add(OceanBaseConnectorOptions.FILE_COMPLETION_KAFKA_NOTIFICATION_ENABLED);
         return options;
     }
 }
