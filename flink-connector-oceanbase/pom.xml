@@ -26,6 +26,10 @@ under the License.
     <packaging>jar</packaging>
     <name>Flink Connector OceanBase</name>
 
+    <properties>
+        <kafka.clients.version>3.4.0</kafka.clients.version>
+    </properties>
+
     <dependencies>
         <dependency>
             <groupId>com.oceanbase</groupId>
@@ -46,6 +50,19 @@ under the License.
         <dependency>
             <groupId>com.oceanbase</groupId>
             <artifactId>ob-partition-calculator</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>org.apache.kafka</groupId>
+            <artifactId>kafka-clients</artifactId>
+            <version>${kafka.clients.version}</version>
+            <exclusions>
+                <!-- Let Flink's provided slf4j-api win to keep compile-time visibility. -->
+                <exclusion>
+                    <groupId>org.slf4j</groupId>
+                    <artifactId>slf4j-api</artifactId>
+                </exclusion>
+            </exclusions>
         </dependency>
 
         <dependency>

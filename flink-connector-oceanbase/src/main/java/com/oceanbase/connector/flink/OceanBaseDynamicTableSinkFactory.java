@@ -16,6 +16,7 @@
 
 package com.oceanbase.connector.flink;
 
+import com.oceanbase.connector.flink.sink.FileCompletionColumns;
 import com.oceanbase.connector.flink.sink.OceanBaseDynamicTableSink;
 import com.oceanbase.connector.flink.source.OceanBaseTableSourceFactory;
 import com.oceanbase.connector.flink.utils.OptionUtils;
@@ -39,7 +40,7 @@ public class OceanBaseDynamicTableSinkFactory implements DynamicTableSinkFactory
     @Override
     public DynamicTableSink createDynamicTableSink(Context context) {
         FactoryUtil.TableFactoryHelper helper = FactoryUtil.createTableFactoryHelper(this, context);
-        helper.validate();
+        helper.validateExcept(OceanBaseConnectorOptions.FILE_COMPLETION_KAFKA_PROPS_PREFIX);
 
         ResolvedSchema resolvedSchema = context.getCatalogTable().getResolvedSchema();
         ResolvedSchema physicalSchema =
@@ -51,8 +52,15 @@ public class OceanBaseDynamicTableSinkFactory implements DynamicTableSinkFactory
                         resolvedSchema.getPrimaryKey().orElse(null));
         Map<String, String> options = context.getCatalogTable().getOptions();
         OptionUtils.printOptions(IDENTIFIER, options);
-        return new OceanBaseDynamicTableSink(
-                physicalSchema, new OceanBaseConnectorOptions(options));
+        OceanBaseConnectorOptions connectorOptions = new OceanBaseConnectorOptions(options);
+        connectorOptions.validateFileCompletionOptions();
+        if (connectorOptions.isFileCompletionKafkaEnabled()) {
+            FileCompletionColumns.assertColumnsValid(
+                    physicalSchema,
+                    connectorOptions.getFileCompletionFlagColumn(),
+                    connectorOptions.getFileCompletionMessageColumn());
+        }
+        return new OceanBaseDynamicTableSink(physicalSchema, connectorOptions);
     }
 
     @Override
@@ -91,6 +99,10 @@ public class OceanBaseDynamicTableSinkFactory implements DynamicTableSinkFactory
         options.add(OceanBaseTableSourceFactory.SPLIT_SIZE);
         options.add(OceanBaseTableSourceFactory.CHUNK_KEY_COLUMN);
         options.add(OceanBaseTableSourceFactory.FETCH_SIZE);
+        options.add(OceanBaseConnectorOptions.FILE_COMPLETION_FLAG_COLUMN);
+        options.add(OceanBaseConnectorOptions.FILE_COMPLETION_MESSAGE_COLUMN);
+        options.add(OceanBaseConnectorOptions.FILE_COMPLETION_KAFKA_TOPIC);
+        options.add(OceanBaseConnectorOptions.FILE_COMPLETION_KAFKA_NOTIFICATION_ENABLED);
         return options;
     }
 }
